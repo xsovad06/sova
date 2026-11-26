@@ -9,8 +9,9 @@ This guide explains how to configure SOVA to use different AI providers (Claude 
 3. [Personal Subscription (Claude Code CLI)](#personal-subscription-claude-code-cli)
 4. [Anthropic API Direct](#anthropic-api-direct)
 5. [Google Vertex AI](#google-vertex-ai)
-6. [Troubleshooting](#troubleshooting)
-7. [Connections Page (Dashboard)](#connections-page-dashboard)
+6. [Routing Claude Code Through Vertex AI](#routing-claude-code-through-vertex-ai)
+7. [Troubleshooting](#troubleshooting)
+8. [Connections Page (Dashboard)](#connections-page-dashboard)
 
 ---
 
@@ -460,6 +461,77 @@ sova config set agent.env_passthrough '["ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML
 ```bash
 sova server start --multi
 ```
+
+---
+
+## Routing Claude Code Through Vertex AI
+
+This section covers pointing the Claude Code CLI at Vertex AI. For the SOVA provider setup itself (`llm.provider`, model IDs, credentials), see [Google Vertex AI](#google-vertex-ai) above.
+
+For deployments that bill through Google Cloud instead of a subscription, configure Claude Code to use Google Vertex AI. SOVA strips the Vertex routing variables from the agents it spawns unless they are listed in `agent.env_passthrough`; see [4. Environment Variable Scrubbing](#4-environment-variable-scrubbing) above.
+
+### Install the Vertex AI dependencies
+
+```bash
+pip install --user -e ".[vertex]"
+```
+
+This installs `google-auth` and related packages needed for Google Cloud authentication.
+
+### Authenticate with Google Cloud
+
+```bash
+gcloud auth application-default login
+```
+
+This sets up Application Default Credentials (ADC) that Claude Code and SOVA will use to authenticate with Vertex AI.
+
+### Configure Claude Code for Vertex AI
+
+Run the Claude Code login wizard:
+
+```bash
+claude
+```
+
+Then run `/login` and select:
+- **Login method**: 3rd-party platform
+- **Provider**: Google Vertex AI
+- **Authentication method**: Application Default Credentials (gcloud auth)
+- **Project**: Your GCP project ID (e.g., `my-gcp-project-123`)
+- **Region**: `global` (recommended for latest models)
+- **Models**: Pin the working models (Sonnet, Opus, Haiku)
+
+### Export the project and region
+
+Add to your shell configuration (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+export ANTHROPIC_VERTEX_PROJECT_ID="your-gcp-project-id"
+export CLOUD_ML_REGION="global"
+```
+
+After updating, reload your shell:
+
+```bash
+source ~/.zshrc  # or source ~/.bashrc
+```
+
+### Verify Claude Code reaches Vertex AI
+
+Test that Claude Code can access Vertex AI:
+
+```bash
+claude -p "Say hello" --model sonnet
+```
+
+If configured correctly, you should see a response from Claude via Vertex AI.
+
+### Notes on regions
+
+- The `global` region provides access to the latest Claude models and uses the base Vertex AI endpoint (`aiplatform.googleapis.com`).
+- Regional endpoints (e.g., `us-east5`) use region-prefixed domains (`{region}-aiplatform.googleapis.com`).
+- SOVA's LLM suggestion feature and batch processing both use these same credentials when `ANTHROPIC_VERTEX_PROJECT_ID` is set.
 
 ---
 

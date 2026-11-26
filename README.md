@@ -115,386 +115,24 @@ sova run 42
 sova server start
 ```
 
-## Dashboard
+## Claude Code
 
-The web dashboard is SOVA's primary interface for monitoring and controlling agents.
-
-```bash
-sova dashboard --project /path/to/project    # http://localhost:8111
-```
-
-| Page | Purpose |
-|------|---------|
-| **Home** | Project list (command center) for multi-project installations |
-| **Work** | What runs, what needs you and what to start next: a header (agents and their limit, run success and merged PRs over 7 days, spend, CodeRabbit, supervisor switch), a board (Up next, Queued, Running, In review, Needs you, Done today) with an issue drawer and Mine/All owner filter, the dependency chains, open PRs and run history (by issue, with its state and result, or every run). `/agents` redirects here |
-| **Run Detail** | Per-run step pipeline, logs, and cost breakdown |
-| **Lifecycle** | Issue lifecycle rail (development through post-merge) |
-| **Costs** | Per-task and per-model cost tracking and aggregation |
-| **Queue** | Batch triage/harden operations with progress tracking |
-| **Roles** | View and edit custom workflow roles (DAG-based) |
-| **Settings** | Runtime configuration management |
-| **Setup** | Project onboarding wizard with directory browser |
-| **Style Guide** | Design system reference with live component examples |
-
-On the Work board, **Up next** ranks issues ready for an agent. **Queued** is the saved order the supervisor starts when it is on and a slot is free. **Running** includes active runs, rebases, and issues marked in progress. **In review** contains open PRs still in draft, CI, review, or changes requested, plus issues marked in review by the tracker; it does not imply unresolved review findings. The PR's thread count shows resolved/total, so the difference is unresolved. **Needs you** contains merge decisions, approvals, and failed runs. Mine matches an issue assignee to the configured identity for that issue's tracker, or a PR author or assignee to the GitHub user. The header figures remain project wide.
-
-### Remote Access over Tailscale
-
-The dashboard stays bound to loopback. To reach it from your own phone or laptop, publish it to your tailnet with Tailscale Serve (never Funnel, which would make it public) and tell SOVA which origin and which Tailscale login to accept:
-
-```bash
-tailscale serve --bg --https=443 http://127.0.0.1:8111
-sova config set dashboard.proxy_origins https://mac.example.ts.net
-sova config set dashboard.proxy_allowed_logins you@example.com
-```
-
-Replace `mac.example.ts.net` with this machine's tailnet name (`tailscale status --json` prints it as `Self.DNSName`, without the trailing dot) and `you@example.com` with your Tailscale login (`LoginName` of your entry under `User` in the same output; `tailscale status` truncates it). Keep the lines free of trailing `#` comments when you paste them into zsh: an interactive zsh does not treat `#` as a comment by default, so the text becomes arguments.
-
-Both settings apply to the whole server and are read once at startup, so restart the server afterwards (`sova server restart`, after checking that no agent is running). They are read from the project the server serves. On the multi-project hub (`sova server start --multi`) that is the directory the server was started in, so run the `sova config set` lines there, or set `SOVA_DASHBOARD_PROXY_ORIGINS` and `SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS` (JSON arrays) in the server environment; a value saved in any other project has no effect.
-
-Enable HTTPS certificates in the Tailscale admin console first, and consider restricting the access policy to your own devices (`autogroup:self`). A request through the proxy origin without an allowed login, and any Funnel request, gets 403. If the first HTTPS request fails with a TLS error, `tailscale cert mac.example.ts.net` prints the underlying certificate error. The security model is in `docs/security-guidelines.md`, "Dashboard Security Model".
-
-On a phone, open `/phone` (`/p/<slug>/phone` on the hub) instead of the Work page: one narrow column with what waits on you (handoffs and the supervisor's pending plan), the running agents with Stop, and a field to start an issue. It uses the same endpoints as the Work page, so it needs no extra setup.
-
-## Configuration
-
-**Note**: SOVA uses database-backed configuration (`.claude/sova.db`). Edit it with `sova config set <key> <value>`, the dashboard Settings page, or `SOVA_*` environment variables. Read a single value (for scripts or commands) with `sova config get <key>`; lists and dicts print as JSON, and a secret key always prints `(secret)`. A legacy `sova.toml` is still read once and auto-migrated into the database if one is present. See [Configuration Troubleshooting](CLAUDE.md#configuration) for details.
-
-The settings are shown below in TOML form for reference (this is a rendering of the stored keys, not a file SOVA writes). Minimal example (required fields only):
-
-```toml
-github_repo = "owner/repo"
-github_user = "owner"
-
-[task_source]
-type = "github"
-```
-
-Key optional sections:
-
-```toml
-[agent]
-model = "opus"              # LLM model for agent steps
-max_budget = 10.0           # Max USD per run ($10 default)
-
-[ci]
-max_fix_attempts = 2        # Auto-fix CI failures (0 to disable)
-max_wait = 900              # Seconds to wait for CI checks
-
-[pipeline]
-auto_handoff = true         # Developer auto-hands off to Reviewer
-auto_address_review = true  # Reviewer auto-triggers address-review
-
-[telemetry]
-hub_url = "https://your-hub.example.com"  # Push run summaries to a central hub (SOVA_TELEMETRY_HUB_URL)
-hub_token = ""                             # Bearer token (SOVA_TELEMETRY_HUB_TOKEN)
-machine_id = ""                            # Auto-derived from hostname+username when empty (SOVA_TELEMETRY_MACHINE_ID)
-
-[mcp.atlassian]
-enabled = false             # Opt-in Confluence + Jira sidecar (mcp-atlassian, needs uvx)
-jira_url = "https://issues.example.com"
-confluence_url = "https://docs.example.com"
-auth_type = "pat"           # "pat" for on-prem, "api_token" for Cloud (paired with email)
-read_only = true            # Agents read context; writes still go through the task adapter
-```
-
-`sova install` writes enabled MCP sidecars to `<project>/.mcp.json` and approves them in `.claude/settings.json`. Leave `token` empty and export `SOVA_MCP_ATLASSIAN_TOKEN` to keep the credential out of that file. See [Integration Guidelines](docs/integration-guidelines.md) for details.
-
-SOVA generates commit subjects and PR titles as conventional-commit lines, validated against
-`commit.types` and `commit.scopes`. When unset, each list is read from a `Valid types:`/`Valid scopes:` line
-in your AGENTS.md or CLAUDE.md, else derived from your recent git history (SOVA's own lists apply only to the SOVA
-repository); `sova install` and `sova commands update` store the result, and `sova doctor` warns when
-`commit.scopes` still matches SOVA's defaults. See [Commit Convention Setup](docs/commit-convention-setup.md).
-
-For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py). Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
-
-## Claude Code Setup
-
-SOVA uses the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) as its default LLM provider (`llm.provider = "claude-code"`) and agent runtime. Sign it in with your Claude subscription:
+SOVA drives the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) by default. Sign it in with your Claude subscription, then confirm with `sova doctor`:
 
 ```bash
 claude auth login
 sova doctor
 ```
 
-The login opens a browser, and the "llm provider" row of `sova doctor` confirms it. On a machine with no browser, use `claude setup-token` instead. The [AI Provider Setup Guide](docs/ai-provider-setup-guide.md) covers both logins, the API-key and Vertex alternatives, the provider variables SOVA scrubs from spawned agents, and troubleshooting.
+On a machine with no browser, use `claude setup-token`. The [AI Provider Setup Guide](docs/ai-provider-setup-guide.md) covers both logins, API-key and Vertex AI alternatives, and troubleshooting. To run pipeline steps through OpenAI's Codex CLI instead, set `agent.runtime = "codex"` (see the [Codex Runtime Setup Guide](docs/codex-runtime-setup.md)).
 
-### Routing Claude Code Through Vertex AI (Optional)
-
-For deployments that bill through Google Cloud instead of a subscription, configure Claude Code to use Google Vertex AI. SOVA strips the Vertex routing variables from the agents it spawns unless they are listed in `agent.env_passthrough`; see the guide's "Environment Variable Scrubbing" step.
-
-#### 1. Install Vertex AI Dependencies
+## Dashboard
 
 ```bash
-pip install --user -e ".[vertex]"
+sova dashboard --project /path/to/project    # http://localhost:8111
 ```
 
-This installs `google-auth` and related packages needed for Google Cloud authentication.
-
-#### 2. Authenticate with Google Cloud
-
-```bash
-gcloud auth application-default login
-```
-
-This sets up Application Default Credentials (ADC) that Claude Code and SOVA will use to authenticate with Vertex AI.
-
-#### 3. Configure Claude Code for Vertex AI
-
-Run the Claude Code login wizard:
-
-```bash
-claude
-```
-
-Then run `/login` and select:
-- **Login method**: 3rd-party platform
-- **Provider**: Google Vertex AI
-- **Authentication method**: Application Default Credentials (gcloud auth)
-- **Project**: Your GCP project ID (e.g., `my-gcp-project-123`)
-- **Region**: `global` (recommended for latest models)
-- **Models**: Pin the working models (Sonnet, Opus, Haiku)
-
-#### 4. Set Environment Variables
-
-Add to your shell configuration (`~/.zshrc` or `~/.bashrc`):
-
-```bash
-export ANTHROPIC_VERTEX_PROJECT_ID="your-gcp-project-id"
-export CLOUD_ML_REGION="global"
-```
-
-After updating, reload your shell:
-
-```bash
-source ~/.zshrc  # or source ~/.bashrc
-```
-
-#### 5. Verify Configuration
-
-Test that Claude Code can access Vertex AI:
-
-```bash
-claude -p "Say hello" --model sonnet
-```
-
-If configured correctly, you should see a response from Claude via Vertex AI.
-
-#### Notes
-
-- The `global` region provides access to the latest Claude models and uses the base Vertex AI endpoint (`aiplatform.googleapis.com`).
-- Regional endpoints (e.g., `us-east5`) use region-prefixed domains (`{region}-aiplatform.googleapis.com`).
-- SOVA's LLM suggestion feature and batch processing both use these same credentials when `ANTHROPIC_VERTEX_PROJECT_ID` is set.
-
-## Alternative Agent Runtimes
-
-`agent.runtime` selects which coding-agent CLI SOVA spawns to execute a
-pipeline step. The accepted values are `"claude-code"` (the default),
-`"codex"`, and `"aider"`. Setting it to `"codex"` runs
-[OpenAI's Codex CLI](https://developers.openai.com/codex/); see
-[Codex Runtime Setup Guide](docs/codex-runtime-setup.md) for authentication
-(browser login with keyring storage, the device-auth and stdin API-key
-fallbacks, and the trusted-automation-only `CODEX_API_KEY` pattern), sandbox
-configuration, and rollback.
-
-## Notifications
-
-SOVA supports multiple notification backends for agent handoffs and system events:
-
-```toml
-[notification]
-# Desktop notifications (macOS via terminal-notifier or JXA, Linux via notify-send)
-desktop = false
-
-# Slack webhook
-slack_webhook_url = ""
-
-# Email via SMTP
-email_enabled = true
-email_to = "dev@example.com"
-email_from = "sova@example.com"
-email_smtp_host = "smtp.example.com"
-email_smtp_port = 587
-email_smtp_starttls = true
-# Credentials via env: SOVA_NOTIFICATION_EMAIL_SMTP_USER, SOVA_NOTIFICATION_EMAIL_SMTP_PASSWORD
-
-# Generic webhook (HTTP POST)
-webhook_url = "https://hooks.example.com/sova"
-webhook_headers = '{"Authorization": "Bearer token123"}'  # JSON object with custom headers
-# The webhook payload also carries kind, issue (a string, or null), pr_number, run_id and url (null without link_base_url)
-
-# Self-hosted ntfy server (skipped when ntfy_url or ntfy_topic is empty)
-ntfy_url = "https://ntfy.example.com"
-ntfy_topic = "sova"
-ntfy_events = ["needs_human", "failed"]   # kinds sent to ntfy: needs_human, failed, finished, info
-link_base_url = "https://sova.example.com"  # notification link: /work/<id>, else /work
-# Bearer token: sova config set notification.ntfy_token <token> (stored in the OS keyring when available);
-# the SOVA_NOTIFICATION_NTFY_TOKEN environment variable overrides the stored token
-# SOVA_NOTIFICATION_NTFY_EVENTS takes comma-separated text or a JSON array
-```
-
-Every notification has a kind (`needs_human`, `failed`, `finished` or `info`). Only ntfy filters by kind
-(`ntfy_events`); the other backends receive every event. Entries in `ntfy_events` are trimmed and lowercased,
-and an unknown or malformed entry is ignored with a warning rather than failing config load. A run that is
-waiting on you sends one `needs_human` push; the exit-time summary for it (and for a step failure the engine
-already reported, or a finish the engine already reported) is `info`, so the default filter yields exactly one push
-and opting into `finished` does not double it. An ntfy push is titled with the event ("Developer failed #12") so a
-lock screen reads at a glance; its body holds the project and the detail.
-
-Point ntfy at a self-hosted server. Topics on the hosted ntfy.sh are public (anyone who guesses the topic name
-can read it) and are not end-to-end encrypted, so issue titles, step errors and dashboard links would leave
-your network.
-
-All backends are fire-and-forget. Errors are logged but never block agent execution.
-
-## Server Management
-
-SOVA can run as an always-on service (dashboard + scheduler daemon):
-
-```bash
-# Start the server
-sova server start --host 127.0.0.1 --port 8111
-
-# Restart the server
-sova server restart
-
-# Stop the server
-sova server stop
-
-# Check server status
-sova server status
-
-# View activity summary
-sova server digest --hours 24
-
-# Install as system service (systemd on Linux, launchd on macOS)
-sova server install-service --type systemd --project /path/to/project
-
-# Or install the multi-project hub (every registered project), started from a fixed working directory
-sova server install-service --type launchd --multi [--workdir ~/sova-hub]
-```
-
-After installing as a service:
-
-```bash
-# systemd
-systemctl --user enable sova-server
-systemctl --user start sova-server
-systemctl --user status sova-server
-
-# launchd
-launchctl load ~/Library/LaunchAgents/com.sova.server.plist
-launchctl start com.sova.server
-launchctl list | grep sova
-```
-
-The generated plist sets `PATH` to the directories of `sova`, `claude`, `gh`, `git`, `codex`, `terminal-notifier` and `uvx` as found at install time, then launchd's default (`/usr/bin:/bin:/usr/sbin:/sbin`, which has none of the first three); re-run `install-service --force` after moving one. For a Mac left on to run SOVA unattended (sleep settings, login and FileVault, what happens to agents across restarts and reboots, phone access), see [Always-On Mac Setup](docs/always-on-mac-setup.md).
-
-The systemd unit is a user unit (`systemctl --user`) and lists the resolved project
-directory in `ReadWritePaths`, since agents write `{project}/.git` as well as
-`{project}/.claude`; `~/.claude.json` and `~/.codex` are listed with a leading `-`
-(the CLIs' own state, optional on a host without one). A project path containing
-whitespace is refused: systemd splits those directives on whitespace, so adapt
-`deploy/sova-server.service` by hand instead. The unit is `Type=notify` with
-`WatchdogSec=60`: the server sends `READY=1` once startup recovery has finished and uvicorn has bound the port, then pings
-the watchdog every 15s on a fixed schedule while the event loop answers (stdlib `sd_notify`, a no-op off
-systemd), so a wedged server is restarted by systemd (`WatchdogSignal=SIGTERM`, no core dump). The ping is
-deliberately not gated on `/api/health` staying 200 or on the database probe: a tracker outage, an expired
-token or an unreachable database turns that `degraded` (HTTP 503), and a restart cannot fix any of them.
-
-**Restarts keep agents running.** Agents run in their own session with output
-redirected to `.claude/agent-output/<run_id>.stdout`, and the unit sets
-`KillMode=process`, so `systemctl --user restart sova-server` stops only the server.
-On startup the new server adopts each live agent it launched (PID alive and process
-creation time matching the run's `started_at`) and keeps managing it; output capture
-resumes from the end of the agent's `.stdout` file, so what the agent wrote while no
-server was running stays in that file rather than in the dashboard log. Adoption is a
-claim held with a lock file (`.claude/agent-output/<run_id>.adopt.lock`), so two servers on
-one project database cannot both manage, finalize and hand off the same run. It only reads
-the agent's worktree and never repairs or recreates it. A dead PID is recorded from what the
-run left behind (a PR handoff, or for a command run the final `result` line in its `.stdout`:
-`done` or `failed`, else `interrupted`); a live PID that is not the run's process (PID reuse)
-is marked `interrupted`. Neither is ever signalled. An adopted agent's exit code is not available, so it is derived from the run's
-status, its handoff or the final `result` line in its `.stdout`; when none of them says
-how it ended, the run is recorded `interrupted` rather than `failed`. The previous server's pre-run baseline is gone, so an adopted
-`address-pr`, `rearrange-commits` or `integrate-pr` run is not diff-guarded (no silent-revert or pin-downgrade
-check; `adopt.diff_guard_baseline_unavailable` is logged). An `address-pr` command without its pre-run PR head
-baseline is recorded as interrupted rather than being accepted from a synchronized branch or output text.
-Set `recovery.kill_orphans = true` to kill identity-matched orphans at
-startup instead. Agents are left running only when a service manager runs the server
-(systemd, or the launchd plist): because of `KillMode=process`, `systemctl --user stop` also
-leaves agents running until the next start adopts them, so stop them from the dashboard first,
-or kill them by hand. An interactive `sova server start` or `sova dashboard` (Ctrl+C) still
-stops its agents on shutdown.
-
-*Unverified on Linux:* the Claude CLI rewrites `~/.claude.json` by
-writing a temp file and renaming it over the original. A single-file read-write bind
-mount may not allow that rename, and sibling files at the home root (backups, locks)
-stay read-only under `ProtectHome=read-only`. If agents cannot save state under the
-unit, relax `ProtectHome` for it.
-
-On macOS, `install-service --type launchd` also writes
-`~/.config/sova/sova-server.newsyslog.conf` and prints a `sudo cp` command for it:
-launchd never rotates its own `StandardOutPath`/`StandardErrorPath`, and newsyslog is
-what does. It holds those descriptors open for the life of the process, so each entry
-sends SIGHUP to the server's PID after rotation. The server reopens the files named by
-`SOVA_SERVER_LOG` and `SOVA_SERVER_ERR_LOG` (set in the generated plist) in place: no
-restart, so running agents are undisturbed. The server takes over SIGHUP only when
-one of those variables is set (a service manager owns the log files); an interactive
-`sova server start` keeps the default, so closing its terminal still stops it. When
-stdout is a terminal, the reopen is skipped with a log line. SIGHUP is ignored while the
-server is starting or stopping, so a rotation in that window is skipped, never fatal. SOVA's own
-`.claude/sova.log` is rotated in-process and needs none of this.
-
-**Health monitoring**: The server exposes health and digest endpoints for external monitoring:
-- `GET /api/health`: `status` (`ok` or `degraded`), `database` (`ok` or `unreachable`, a probe bounded to 2s), uptime, scheduler state, active agent count, package version and git SHA. Answers HTTP 503 (same JSON body) when `degraded`: the watch loop's last completed scan is older than three times `watch.interval_idle` while no task is in flight, the scheduler is enabled on a single-project server and its watch loop crashed or is still missing 30s after it was started, or the database probe failed. On the multi-project hub, `databases` holds one probe per registered project (a removed project directory, or one with no `.claude/`, is `unreachable` without a probe), `database` is `ok` only when every one is (and with no project registered), and `registry` is `unreadable`, making it `degraded`, when the registry file cannot be read. `code_sha` (full HEAD when the server started), `checkout_sha` (full HEAD now, read from `.git` and cached for 5s) and `restart_required` (both known and different) report a server running older code than its checkout; informational only, it never changes `status` or the HTTP code, and every dashboard page shows a restart banner while it is true. An `ImportError` escaping any route answers 503 with a detail telling the operator to restart.
-- `GET /api/scheduler/health`: uptime, scan count, error count, agent slots, DB status
-- `GET /api/scheduler/digest?hours=24`: tasks completed/failed, cost summary
-
-**Log rotation**: The server and every `sova run` write `.claude/sova.log`, each through its own rotating handler built from the same two settings (10 MB max, 5 backups by default), so they agree on when to roll it. The server reads them at startup, so a change takes effect on the next restart. Configure via:
-
-```toml
-[server]
-log_max_bytes = 10485760    # 10 MB
-log_backup_count = 5
-```
-
-## CLI Reference
-
-| Category | Commands |
-|----------|----------|
-| **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
-| **Server** | `sova server start\|stop\|restart\|status\|digest\|install-service` |
-| **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
-| **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova linked-issues <pr> [--apply | --mark-in-review]`, `sova pr-verdict <pr>`, `sova handoff-summary --source command:<name> --pr <pr>` (closing run summary, from stdin), `sova merge-subject <pr>` |
-| **Monitor** | `sova status`, `sova costs`, `sova briefing` ([setup](docs/awareness-setup.md)), `sova config`, `sova dashboard` |
-| **Knowledge** | `sova assess set\|get\|clear <issue>` |
-| **Commands** | `sova commands list\|diff\|update\|sync` |
-| **Review retro** | `sova retro record <pr> [--force]`, `sova retro backfill [--dry-run]`, `sova retro report [--since YYYY-MM]`, `sova retro top-rules [--limit N] [--since YYYY-MM]` (the most repeated rules as JSON, read by `/review` and `/review-pr`): which recorded rules (bold-labelled bullets in AGENTS.md, CLAUDE.md, `.claude/rules/`, common-mistakes.md) each merged PR's review findings repeat, per month |
-| **MCP** | `sova mcp serve` (blocking command tools, plus operator tools that drive a running `sova server`: status, pending handoffs and plan, start, stop, resume, handoff dismiss and action, plan approve and skip) |
-| **Maintenance** | `sova cleanup` |
-
-Run `sova --help` for the full list.
-
-### Registering the MCP Server in Claude Code
-
-Bind the server to one project so every tool acts on it, then allow the two read-only operator tools and leave the rest on ask, so each start, stop or approval shows Claude Code's permission prompt:
-
-```bash
-claude mcp add sova -- sova mcp serve --project /path/to/project
-```
-
-Put this in `.claude/settings.json` (project) or `~/.claude/settings.json` (user), merged into any existing `permissions.allow` list:
-
-```json
-{
-  "permissions": {
-    "allow": ["mcp__sova__sova_status", "mcp__sova__sova_pending"]
-  }
-}
-```
-
-The operator tools call the running `sova server` (or `sova dashboard`) over loopback at the configured `server.host` and `server.port`, then `dashboard.port`, so they go through the same duplicate, budget and suitability checks as the dashboard. A server started with `--port` on a port the config does not name is not found. Each call first asks the endpoint which project it serves, so a `sova server` started before this version existed (no identity route) must be restarted on the same SOVA version before the operator tools will act on it; an endpoint that is not a SOVA dashboard, or serves another project, is skipped in favor of the next configured port. That permission prompt is the human confirmation: tracker text the session reads (issue titles, handoff summaries) can carry instructions, and the tools never accept a force or budget override.
+The Work page shows what is running, what needs you and what to start next. Other pages cover run detail, costs, the batch queue, custom roles and settings, and a phone view works over Tailscale. See [Dashboard](docs/dashboard.md) for every page and the board's stages.
 
 ## How It Works
 
@@ -506,6 +144,20 @@ SOVA uses a **role-based architecture** with four specialized agent types:
 4. **Reviewer**: reviews the PR, posts findings, triggers a fix cycle if needed
 
 Agents are **ephemeral**: each one spawns, does its job, writes a handoff file, and exits. The orchestrator (scheduler or dashboard) reads the handoff and spawns the next agent in the chain. Developer and Reviewer chain autonomously: when the Developer finishes, it hands off to the Reviewer, which hands back to the Developer if findings exist. This loop continues until the code is clean, then SOVA notifies you and waits for your merge decision.
+
+## Documentation
+
+| Topic | Guide |
+|-------|-------|
+| Every doc, by audience | [docs/README.md](docs/README.md) |
+| Dashboard pages and phone access | [docs/dashboard.md](docs/dashboard.md) |
+| Configuration and notifications | [docs/configuration.md](docs/configuration.md), [docs/notifications.md](docs/notifications.md) |
+| Running the always-on server | [docs/server-operations.md](docs/server-operations.md), [docs/always-on-mac-setup.md](docs/always-on-mac-setup.md) |
+| CLI and MCP server | [docs/cli-reference.md](docs/cli-reference.md) |
+| LLM providers and Vertex AI | [docs/ai-provider-setup-guide.md](docs/ai-provider-setup-guide.md) |
+| Jira as a task source | [docs/jira-configuration-guide.md](docs/jira-configuration-guide.md) |
+| Daily briefing (Gmail, Calendar) | [docs/awareness-setup.md](docs/awareness-setup.md) |
+| Architecture and roadmap | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/VISION.md](docs/VISION.md) |
 
 ## Task Sources
 
@@ -524,19 +176,6 @@ A subset of SOVA's distributable commands (`develop`, `spec`, `review`, `pr`, `d
 /plugin install sova@sova
 ```
 
-## Awareness Briefing
-
-SOVA's awareness subsystem aggregates information from Gmail, Google Calendar, GitHub PRs, Apple Reminders, and agent runs into a unified morning briefing. Run `sova briefing` to see everything that needs your attention in one place.
-
-**What it surfaces:**
-- Unread emails and threads needing replies
-- Today's calendar schedule and upcoming meetings
-- Open PRs (yours and awaiting your review)
-- Failed or interrupted agent runs
-- Apple Reminders tasks (macOS only)
-
-**Setup:** See [Awareness Setup Guide](docs/awareness-setup.md) for Google OAuth2 configuration and provider details.
-
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style, and PR guidelines.
@@ -545,18 +184,14 @@ SOVA has no bounty, reward, or paid-contribution program. There is no `/claim`, 
 
 ```bash
 make check    # Lint + test (close to CI; see docs/testing-guidelines.md for what it does not cover)
-make lint     # ShellCheck + Ruff + dashboard JS syntax check (needs node; see CONTRIBUTING.md) + import layering contract + whole-tree invariant scans
-make test     # All tests (bash + python)
-make format   # Auto-format Python
+make test     # All tests (bash + python); `make lint` and `make format` are in CONTRIBUTING.md
 ```
 
 ## Getting Help
 
-- Run `sova doctor` to check your environment setup
-- Run `sova --help` or `sova <command> --help` for CLI usage
+- Run `sova doctor` to check your environment, and `sova --help` or `sova <command> --help` for CLI usage
 - **Config issues?** See [Troubleshooting Configuration](docs/troubleshooting-config.md) for common errors and fixes
 - File an [issue](https://github.com/xsovad06/sova/issues) for bugs or questions
-- See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup
 
 ## License
 

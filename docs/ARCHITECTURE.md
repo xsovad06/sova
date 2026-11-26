@@ -135,6 +135,12 @@ Every other file under `docs/`, grouped by purpose. Dated reports and drafts are
 | [handoff-protocol.md](handoff-protocol.md) | Agent handoff file format and lifecycle |
 | [awareness-setup.md](awareness-setup.md) | Setting up the awareness briefing providers |
 | [troubleshooting-config.md](troubleshooting-config.md) | Diagnosing config load and agent spawn failures |
+| [README.md](README.md) | Index of every doc, grouped by audience |
+| [configuration.md](configuration.md) | Settings, the minimal config and key optional sections |
+| [dashboard.md](dashboard.md) | Dashboard pages, the Work board's stages, phone access over Tailscale |
+| [notifications.md](notifications.md) | Desktop, Slack, email, webhook and ntfy notification backends |
+| [server-operations.md](server-operations.md) | Always-on server: service install, restarts, health, logs |
+| [cli-reference.md](cli-reference.md) | The `sova` commands by category and MCP server registration |
 | [invariants.md](invariants.md) | Full rules, exemptions and history of each pre-push and CI invariant |
 | [workflow-history.md](workflow-history.md) | Full text and incident history behind `.claude/rules/workflow.md`'s rules |
 | [token-compression.md](token-compression.md) | Optional RTK and Headroom token compression setup |

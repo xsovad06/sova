@@ -44,7 +44,7 @@ launchctl load ~/Library/LaunchAgents/com.sova.server.plist
 curl -s http://127.0.0.1:8111/api/health
 ```
 
-Run these in the project directory. The first line is optional and stops the server from starting issues on its own (see "One project, and the scheduler" below). The [README's Server Management section](../README.md#server-management) covers the service commands, log rotation with newsyslog and health monitoring. What matters for an unattended Mac:
+Run these in the project directory. The first line is optional and stops the server from starting issues on its own (see "One project, and the scheduler" below). The [Server Management guide](server-operations.md) covers the service commands, log rotation with newsyslog and health monitoring. What matters for an unattended Mac:
 
 - **It starts at login, not at boot.** The plist is a LaunchAgent, so launchd starts it in your login session. With FileVault on, the disk stays locked after a restart until someone logs in at the login window, so after a reboot (an update, a power cut) SOVA stays down until you log in once. This guide does not cover auto-login or a LaunchDaemon.
 - **PATH.** launchd starts a LaunchAgent with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, which misses `~/.local/bin` (where `claude` installs) and `/opt/homebrew/bin` (`gh`, Homebrew's `git`). The generated plist sets `PATH` to the directory of each of `claude`, `node` (an npm-installed `claude` needs it), `gh`, `git`, `codex`, `terminal-notifier` and `uvx` found at install time, then `sova`'s own directory, then that default. Re-run `install-service --force` and reload after moving one of them, for example after a Python upgrade moves `sova`. Under a plist generated before SOVA added this, `sova doctor` fails `claude CLI`, `gh CLI`, `llm provider` and `agent runtime`, and `git` resolves to Apple's `/usr/bin/git`.
@@ -62,7 +62,7 @@ To restart the service, run `launchctl kickstart -k gui/$(id -u)/com.sova.server
 | Reboot or power loss | Killed; at the next start, recovery records it from what it left behind (a PR handoff, a final `result` line) or as `interrupted` (from code) | Marked `interrupted` |
 | Sleep | Paused with every other process until the Mac wakes (a lid-close sleep was tested; sleep suspends every process) | Paused |
 
-The adoption rules (process identity check, the adopt lock file, what is not diff-guarded after adoption) are in the [README's Server Management section](../README.md#server-management).
+The adoption rules (process identity check, the adopt lock file, what is not diff-guarded after adoption) are in the [Server Management guide](server-operations.md).
 
 ## Steer Sessions from the Phone with Remote Control
 
@@ -88,7 +88,7 @@ Claude Code Remote Control shows a Claude Code session running on the Mac in the
   - Second test: a Remote Control started outside a screen was gone a few minutes later; the cause was not determined. After detaching, confirm that the process hangs under the screen with `ps -o pid,ppid,command -p <pid of claude remote-control>`, following the parent chain up to `SCREEN`.
 
 - **Push notifications** are two switches in `/config`: "Push when Claude decides" and "Push when actions required" (both present under these names, tested). The phone also needs notifications allowed for the Claude app in the iPhone's Settings; with that off, the first test produced no push at all. Tested with "actions required" on: a question put to the session from the phone, with the phone locked, produced a push from the Claude app, but it appeared only after the phone was unlocked, not on the locked screen. The cause was not determined; the first things to check are the app's Lock Screen setting under Settings, Notifications, Claude, and any Focus mode. A permission prompt as the trigger was not tested.
-- **The SOVA operator tools.** Flags given before `remote-control` (such as `--mcp-config`) are not passed to the sessions server mode spawns, and its own `--settings` flag needs Claude Code 2.1.321 or later. Register `sova mcp serve` with `claude mcp add` instead, as the [README describes](../README.md#registering-the-mcp-server-in-claude-code), so every session started in that directory loads it. The registration is stored per folder, so each folder you serve with Remote Control needs its own `claude mcp add`, bound to that project with `--project` (see [Several Projects and a Second Machine](#several-projects-and-a-second-machine)). Second test: a phone session in each of two folders called `sova_status` and got live data for its own project.
+- **The SOVA operator tools.** Flags given before `remote-control` (such as `--mcp-config`) are not passed to the sessions server mode spawns, and its own `--settings` flag needs Claude Code 2.1.321 or later. Register `sova mcp serve` with `claude mcp add` instead, as the [CLI reference describes](cli-reference.md#registering-the-mcp-server-in-claude-code), so every session started in that directory loads it. The registration is stored per folder, so each folder you serve with Remote Control needs its own `claude mcp add`, bound to that project with `--project` (see [Several Projects and a Second Machine](#several-projects-and-a-second-machine)). Second test: a phone session in each of two folders called `sova_status` and got live data for its own project.
 
 Tested with a session started by `claude remote-control --name rc-terminal` in a terminal: it appeared in the Claude iPhone app, and a call to the registered `sova_status` and `sova_pending` tools came back with live data after approving the tool on the phone.
 
@@ -106,7 +106,7 @@ Tested with a session started by `claude remote-control --name rc-terminal` in a
 
 ## Reach the Dashboard Privately with Tailscale
 
-The dashboard stays bound to `127.0.0.1`; Tailscale Serve publishes it to your own tailnet devices only, with Funnel off. Setup, the two settings it needs and the tailnet login check are in the [README's Remote Access over Tailscale section](../README.md#remote-access-over-tailscale); the security model is in [docs/security-guidelines.md](security-guidelines.md), "Dashboard Security Model".
+The dashboard stays bound to `127.0.0.1`; Tailscale Serve publishes it to your own tailnet devices only, with Funnel off. Setup, the two settings it needs and the tailnet login check are in [Remote Access over Tailscale](dashboard.md#remote-access-over-tailscale); the security model is in [Security Guidelines: Dashboard Security Model](security-guidelines.md#dashboard-security-model).
 
 On the test Mac, `tailscale serve status` reports:
 
@@ -121,7 +121,7 @@ with `dashboard.proxy_origins` set to that origin and `dashboard.proxy_allowed_l
 
 ## Push Notifications with ntfy
 
-SOVA pushes "needs you" and "failed" events to a self-hosted ntfy server; the settings and the reasons to self-host rather than use the public ntfy.sh are in the [README's Notifications section](../README.md#notifications). This setup was tested on 2026-11-24 with ntfy 2.38.1 and the ntfy iPhone app.
+SOVA pushes "needs you" and "failed" events to a self-hosted ntfy server; the settings and the reasons to self-host rather than use the public ntfy.sh are in the [Notifications guide](notifications.md). This setup was tested on 2026-11-24 with ntfy 2.38.1 and the ntfy iPhone app.
 
 **Run the server in Docker.** ntfy's own docs say only its CLI is supported on macOS, and Homebrew's `ntfy` has no `serve` command. The official image works. Keep its port on loopback and let Tailscale Serve publish it, as with the dashboard:
 
@@ -347,7 +347,7 @@ sova server status
 curl -s http://127.0.0.1:8111/api/agents/active
 ```
 
-Check that no agent is running, then run `sova server restart` **in the directory the hub was started in**. A restart stops the server and starts the new one in the terminal that runs the command, and it reads its configuration from that terminal's current directory (from `sova/cli/commands/server.py`). Leave `--project` off for the hub: it selects single-project mode, which starts the scheduler. Restarted from another project's folder, the hub should come back without the proxy settings above, so the tailnet address would answer 403 (from the code and the README's description of where the settings are read; not tested). To find the directory of a hub you did not start yourself, take the PID from `sova server status`:
+Check that no agent is running, then run `sova server restart` **in the directory the hub was started in**. A restart stops the server and starts the new one in the terminal that runs the command, and it reads its configuration from that terminal's current directory (from `sova/cli/commands/server.py`). Leave `--project` off for the hub: it selects single-project mode, which starts the scheduler. Restarted from another project's folder, the hub should come back without the proxy settings above, so the tailnet address would answer 403 (from the code and the Dashboard guide's description of where the settings are read; not tested). To find the directory of a hub you did not start yourself, take the PID from `sova server status`:
 
 ```bash
 lsof -a -p 12345 -d cwd -Fn
