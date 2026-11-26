@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import smtplib
 import sys
 from collections.abc import Coroutine
+from contextvars import ContextVar
 from email.message import EmailMessage
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -110,7 +113,7 @@ def _ntfy_wants(config: NotificationConfig, kind: NotificationKind) -> bool:
     return kind.value in config.ntfy_events
 
 
-async def _safe_notify(log_event: str, coro: Coroutine[Any, Any, None], title: str) -> None:
+async def _safe_notify(log_event: str, coro: Coroutine[Any, Any, object], title: str) -> None:
     """Generic notification wrapper that logs but never raises."""
     try:
         await coro
@@ -118,7 +121,7 @@ async def _safe_notify(log_event: str, coro: Coroutine[Any, Any, None], title: s
         log.warning(log_event, title=title, exc_info=True)
 
 
-def _fire_and_forget(coro: Coroutine[Any, Any, None]) -> None:
+def _fire_and_forget(coro: Coroutine[Any, Any, object]) -> None:
     """Schedule a coroutine as a background task, preventing GC."""
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
@@ -246,26 +249,71 @@ async def _notify_jxa(title: str, message: str, *, subtitle: str = "") -> None:
     await run("osascript", "-l", "JavaScript", "-e", script)
 
 
-async def send_slack_notification(webhook_url: str, title: str, message: str) -> None:
-    """Send a Slack notification via incoming webhook."""
+def _url_host(url: str) -> str:
+    """The hostname of a webhook URL, the only part of it safe to log: its path and query carry the secret."""
+    try:
+        return urlsplit(url).hostname or ""
+    except ValueError:
+        return ""
+
+
+# Set while _post_hook() sends: httpx logs every request's full URL at INFO, and a webhook URL's path and
+# query carry its secret, so its log record is reduced to the host while this is set.
+_hook_request_in_flight: ContextVar[bool] = ContextVar("_hook_request_in_flight", default=False)
+
+
+class _HookUrlLogFilter(logging.Filter):
+    """Rewrite the URL in httpx's request log record to its hostname for a webhook POST."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _hook_request_in_flight.get() and isinstance(record.args, tuple):
+            record.args = tuple(_url_host(str(arg)) if isinstance(arg, httpx.URL) else arg for arg in record.args)
+        return True
+
+
+logging.getLogger("httpx").addFilter(_HookUrlLogFilter())  # stdlib-logging: filters httpx's own logger
+
+
+async def _post_hook(
+    failure_event: str, url: str, payload: dict[str, Any], headers: dict[str, str], **log_fields: str
+) -> bool:
+    """POST `payload` to a webhook; True on a 2xx answer, False (logged by host only) on any send failure.
+
+    The exception is not logged: httpx puts the full URL, secret included, in its message, and a
+    traceback's frames hold the headers (the credential). httpx's own request log line is reduced to
+    the host by `_HookUrlLogFilter`. `log_fields` adds safe context to the failure event.
+    """
+    in_flight = _hook_request_in_flight.set(True)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS)
+            response.raise_for_status()
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+        # InvalidURL (a malformed URL, e.g. a bad port) is not an HTTPError, and its message quotes the URL.
+        # ValueError covers a header value httpx cannot encode (UnicodeEncodeError, e.g. a non-ASCII
+        # value `os.path.expandvars` produced), which would otherwise escape the bool contract.
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        log.warning(failure_event, host=_url_host(url), status=status, error=type(exc).__name__, **log_fields)
+        return False
+    finally:
+        _hook_request_in_flight.reset(in_flight)
+    return True
+
+
+async def send_slack_notification(webhook_url: str, title: str, message: str) -> bool:
+    """Send a Slack notification via incoming webhook; True only when Slack accepted it.
+
+    False when no URL is configured or delivery failed (logged by host only), so a caller that
+    reports delivery (a "send test notification" action) can tell the user.
+    """
     if not webhook_url:
-        return
+        return False
 
-    payload = json.dumps({"text": f"*{title}*\n{message}"})
-
-    await run(
-        "curl",
-        "-s",
-        "-X",
-        "POST",
-        "-H",
-        "Content-Type: application/json",
-        "-d",
-        payload,
-        webhook_url,
-        timeout=30,
-    )
+    payload = {"text": f"*{title}*\n{message}"}
+    if not await _post_hook("notify.slack_failed", webhook_url, payload, {}):
+        return False
     log.info("notify.slack", title=title)
+    return True
 
 
 async def send_email_notification(config: NotificationConfig, title: str, message: str) -> None:
@@ -293,14 +341,15 @@ async def send_email_notification(config: NotificationConfig, title: str, messag
 
 async def send_webhook_notification(
     url: str, headers: str, title: str, message: str, *, item: dict[str, Any] | None = None
-) -> None:
-    """Send a webhook notification via HTTP POST.
+) -> bool:
+    """Send a webhook notification via HTTP POST; True only when the endpoint answered 2xx.
 
     *item* adds fields (kind, issue, pr_number, run_id, url) next to ``title`` and ``message``, so
-    consumers that only read those two keep working.
+    consumers that only read those two keep working. False when no URL is configured or delivery
+    failed (logged by host only).
     """
     if not url:
-        return
+        return False
 
     parsed_headers: dict[str, str] = {}
     if headers:
@@ -308,15 +357,14 @@ async def send_webhook_notification(
             raw_headers = json.loads(headers)
             parsed_headers = {k: os.path.expandvars(v) for k, v in raw_headers.items()}
         except (json.JSONDecodeError, TypeError, AttributeError):
-            log.warning("notify.webhook_headers_invalid", headers=headers)
+            # The headers are not logged: they usually carry the webhook's credential.
+            log.warning("notify.webhook_headers_invalid")
 
     payload = {"title": title, "message": message, **(item or {})}
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json=payload, headers=parsed_headers, timeout=_HTTP_TIMEOUT_SECONDS)
-        response.raise_for_status()
-
-    log.info("notify.webhook", title=title, url=url)
+    if not await _post_hook("notify.webhook_failed", url, payload, parsed_headers):
+        return False
+    log.info("notify.webhook", title=title, host=_url_host(url))
+    return True
 
 
 async def send_ntfy_notification(
@@ -332,7 +380,8 @@ async def send_ntfy_notification(
 
     Skipped silently when the URL or topic is empty. The bearer token is resolved here (keyring first),
     sent only in the Authorization header, and never logged; a missing token sends no header.
-    A network error or non-2xx response is logged and swallowed.
+    A network error or non-2xx response is logged (host and error type only, like a webhook, since
+    `ntfy_url` may carry userinfo) and swallowed.
     """
     base_url = config.ntfy_url.strip()
     topic = config.ntfy_topic.strip()
@@ -352,16 +401,8 @@ async def send_ntfy_notification(
     token = await asyncio.to_thread(resolve_ntfy_token, config.ntfy_token, resolve_project_dir(project_dir))
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-    try:
-        async with httpx.AsyncClient() as client:
-            # JSON publishing posts to the server root; normalize so a trailing slash is not doubled or missing.
-            response = await client.post(
-                f"{base_url.rstrip('/')}/", json=payload, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS
-            )
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-        log.warning("notify.ntfy_failed", topic=topic, status=status, exc_info=True)
+    # JSON publishing posts to the server root; normalize so a trailing slash is not doubled or missing.
+    if not await _post_hook("notify.ntfy_failed", f"{base_url.rstrip('/')}/", payload, headers, topic=topic):
         return
 
     log.info("notify.ntfy", topic=topic, kind=kind.value, title=title)

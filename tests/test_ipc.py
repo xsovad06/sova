@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from structlog.testing import capture_logs
 
@@ -943,28 +946,120 @@ class TestDesktopNotification:
                 mock_run.assert_not_awaited()
 
 
+_SLACK_URL = "https://hooks.slack.com/services/T000/B000/secretpart"
+
+
+def _hook_client(handler: Callable[[httpx.Request], httpx.Response]) -> object:
+    """Patch `httpx.AsyncClient` in notifications so every request goes to `handler`."""
+    real_client = httpx.AsyncClient
+
+    def client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+    return patch("sova.ipc.notifications.httpx.AsyncClient", side_effect=client)
+
+
+def _ok(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, text="ok")
+
+
+def _refuse(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(404)
+
+
+def _unreachable(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError(f"cannot reach {request.url}", request=request)
+
+
 class TestSlackNotification:
-    async def test_send_slack(self) -> None:
+    async def test_send_slack_posts_json_and_logs_success(self) -> None:
         from sova.ipc.notifications import send_slack_notification
 
-        with patch("sova.ipc.notifications.run") as mock_run:
-            mock_run.return_value = MagicMock(success=True)
-            await send_slack_notification(
-                webhook_url="https://hooks.slack.com/services/T/B/x",
-                title="Agent needs help",
-                message="Please review PR #42",
-            )
+        seen: list[httpx.Request] = []
 
-            mock_run.assert_awaited_once()
-            call_args = mock_run.call_args[0]
-            assert "curl" in call_args
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, text="ok")
+
+        with _hook_client(handler), capture_logs() as logs:
+            await send_slack_notification(_SLACK_URL, "Agent needs help", "Please review PR #42")
+
+        assert [str(r.url) for r in seen] == [_SLACK_URL]
+        assert json.loads(seen[0].content) == {"text": "*Agent needs help*\nPlease review PR #42"}
+        assert [e["event"] for e in logs] == ["notify.slack"]
+
+    @pytest.mark.parametrize(("handler", "status"), [(_refuse, 404), (_unreachable, None)], ids=["non-2xx", "network"])
+    async def test_send_slack_failure_is_logged_without_the_url(
+        self, handler: Callable[[httpx.Request], httpx.Response], status: int | None
+    ) -> None:
+        from sova.ipc.notifications import send_slack_notification
+
+        with _hook_client(handler), capture_logs() as logs:
+            sent = await send_slack_notification(_SLACK_URL, "Title", "Body")
+
+        assert sent is False
+        assert [e["event"] for e in logs] == ["notify.slack_failed"]
+        assert logs[0]["host"] == "hooks.slack.com"
+        assert logs[0]["status"] == status
+        assert "secretpart" not in repr(logs)
+
+    async def test_send_slack_reports_delivery(self) -> None:
+        from sova.ipc.notifications import send_slack_notification
+
+        with _hook_client(_ok):
+            assert await send_slack_notification(_SLACK_URL, "Title", "Body") is True
+        assert await send_slack_notification("", "Title", "Body") is False
+
+    @pytest.mark.parametrize(
+        "sender",
+        ["slack", "webhook"],
+    )
+    async def test_a_malformed_hook_url_is_logged_by_host_and_never_raises(self, sender: str) -> None:
+        """httpx.InvalidURL is not an httpx.HTTPError, and its message quotes the URL's secret part."""
+        from sova.ipc.notifications import send_slack_notification, send_webhook_notification
+
+        url = "https://hooks.example.com:notaport/services/secretpart"
+        with _hook_client(_ok), capture_logs() as logs:
+            if sender == "slack":
+                sent = await send_slack_notification(url, "Title", "Body")
+            else:
+                sent = await send_webhook_notification(url, "", "Title", "Body")
+
+        assert sent is False
+        assert [e["event"] for e in logs] == [f"notify.{sender}_failed"]
+        assert logs[0]["error"] == "InvalidURL"
+        assert "secretpart" not in repr(logs)
+
+    @pytest.mark.parametrize(("handler", "status"), [(_ok, 200), (_refuse, 404)], ids=["delivered", "non-2xx"])
+    async def test_httpx_request_log_carries_only_the_host(
+        self, handler: Callable[[httpx.Request], httpx.Response], status: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """httpx logs each request's full URL at INFO; the Slack secret path must not reach that record."""
+        from sova.ipc.notifications import send_slack_notification
+
+        with _hook_client(handler), caplog.at_level(logging.INFO, logger="httpx"), capture_logs() as logs:
+            await send_slack_notification(_SLACK_URL, "Title", "Body")
+
+        httpx_records = [r.getMessage() for r in caplog.records if r.name == "httpx"]
+        reason = httpx.codes.get_reason_phrase(status)
+        assert httpx_records == [f'HTTP Request: POST hooks.slack.com "HTTP/1.1 {status} {reason}"']
+        assert "secretpart" not in caplog.text
+        assert "secretpart" not in repr(logs)
+
+    async def test_httpx_request_log_outside_a_hook_keeps_its_url(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The filter only rewrites a webhook POST's record, never another httpx caller's."""
+        async with httpx.AsyncClient(transport=httpx.MockTransport(_ok)) as client:
+            with caplog.at_level(logging.INFO, logger="httpx"):
+                await client.get("https://api.example.com/path")
+
+        assert "https://api.example.com/path" in caplog.text
 
     async def test_send_slack_empty_url_skips(self) -> None:
         from sova.ipc.notifications import send_slack_notification
 
-        with patch("sova.ipc.notifications.run") as mock_run:
+        with patch("sova.ipc.notifications.httpx.AsyncClient") as client:
             await send_slack_notification(webhook_url="", title="Test", message="Body")
-            mock_run.assert_not_awaited()
+        client.assert_not_called()
 
 
 class TestNotify:
@@ -1146,6 +1241,34 @@ class TestWebhookNotification:
                 await _safe_notify("notify.webhook_failed", coro, "Title")
 
         assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["notify.webhook_failed"]
+
+    @pytest.mark.parametrize("handler", [_refuse, _unreachable], ids=["non-2xx", "network"])
+    async def test_webhook_logs_carry_the_host_only(self, handler: Callable[[httpx.Request], httpx.Response]) -> None:
+        from sova.ipc.notifications import send_webhook_notification
+
+        url = "https://hooks.example.com/sova/secretpart?token=secretquery"
+        with _hook_client(handler), capture_logs() as logs:
+            failed = await send_webhook_notification(url, '{"Authorization": "Bearer secretheader"', "Title", "Body")
+        with _hook_client(lambda _r: httpx.Response(204)), capture_logs() as ok_logs:
+            sent = await send_webhook_notification(url, "", "Title", "Body")
+
+        assert (failed, sent) == (False, True)
+
+        assert [e["event"] for e in logs] == ["notify.webhook_headers_invalid", "notify.webhook_failed"]
+        assert [(e["event"], e["host"]) for e in ok_logs] == [("notify.webhook", "hooks.example.com")]
+        assert "secret" not in repr(logs + ok_logs)
+
+    async def test_an_unencodable_header_is_a_logged_false_not_an_exception(self) -> None:
+        """httpx raises UnicodeEncodeError for a non-ASCII header value, which must not escape the bool contract."""
+        from sova.ipc.notifications import send_webhook_notification
+
+        url = "https://hooks.example.com/sova/secretpart"
+        with _hook_client(lambda _r: httpx.Response(204)), capture_logs() as logs:
+            sent = await send_webhook_notification(url, '{"X-Note": "caf\\u00e9 \\u2603"}', "Title", "Body")
+
+        assert sent is False
+        assert [(e["event"], e["host"]) for e in logs] == [("notify.webhook_failed", "hooks.example.com")]
+        assert "secret" not in repr(logs)
 
 
 class TestNotifyDispatcher:
