@@ -359,6 +359,44 @@ class TestWorkflowEngine:
             count = (await session.execute(select(func.count(TaskRun.id)).where(TaskRun.issue_number == "42"))).scalar()
             assert count == 1
 
+    async def test_adopting_a_missing_run_hides_the_database_password(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The error names the database for diagnosis, but never with the password of its URL."""
+        engine = WorkflowEngine(steps=[], ctx=_make_ctx(tmp_path, task_run_id=987654))
+        engine._task_run_id = 987654
+        session = await get_session()
+        monkeypatch.setenv("SOVA_DATABASE_URL", "postgresql://sova:hunter2@db.example.com/sova")
+        with (
+            patch("sova.core.workflow.get_session", AsyncMock(return_value=session)),
+            capture_logs() as logs,
+            pytest.raises(RuntimeError, match="sova:\\*\\*\\*@db.example.com") as exc_info,
+        ):
+            await engine._adopt_task_run()
+
+        assert "hunter2" not in str(exc_info.value)
+        assert "hunter2" not in repr(logs)
+        assert any("sova:***@db.example.com" in repr(entry) for entry in logs)
+
+    async def test_adopting_a_missing_run_names_the_default_database_path_verbatim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no SOVA_DATABASE_URL the error names the project's own database file as is, even with an "@"."""
+        project_dir = tmp_path / "user@host"
+        project_dir.mkdir()
+        engine = WorkflowEngine(steps=[], ctx=_make_ctx(project_dir, task_run_id=987654))
+        engine._task_run_id = 987654
+        session = await get_session()
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        with (
+            patch("sova.core.workflow.get_session", AsyncMock(return_value=session)),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            await engine._adopt_task_run()
+
+        assert str(project_dir / ".claude" / "sova.db") in str(exc_info.value)
+        assert "***" not in str(exc_info.value)
+
     async def test_no_run_id_creates_new_task_run(self, tmp_path: Path) -> None:
         """Without task_run_id, the engine should create its own TaskRun (backward compat)."""
         ctx = _make_ctx(tmp_path)
