@@ -11,6 +11,7 @@ rather than the whole report.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import inspect
 import json
 import platform
@@ -232,6 +233,7 @@ def _validate_sova_config(project_dir: Path) -> list[DiagnosticCheck]:
             checks.extend(_check_github_config(cfg))
         elif ts_type == "jira":
             checks.extend(_check_jira_config(cfg))
+        checks.extend(_check_ldap_config(cfg))
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append(DiagnosticCheck("config valid", False, str(exc)[:80], False))
     return checks
@@ -261,6 +263,32 @@ def _check_jira_config(cfg: ProjectConfig) -> list[DiagnosticCheck]:
         DiagnosticCheck("jira_api_token", bool(ts.jira_api_token), "(set)" if ts.jira_api_token else _EMPTY, False),
         DiagnosticCheck("jira_project_key", bool(ts.jira_project_key), ts.jira_project_key or _EMPTY, False),
     ]
+
+
+def _check_ldap_config(cfg: ProjectConfig) -> list[DiagnosticCheck]:
+    """Warn when LDAP is enabled but a directory setting it needs is empty.
+
+    The directory has no default, so an enabled config without ``ldap.server`` or
+    ``ldap.base_dn`` builds no client, and ``ldap.team_mapping`` without
+    ``ldap.group_base_dn`` resolves no owner. The optional ``ldap3`` package must also be
+    importable, or no client is built. None of these fails a run, so the only other sign is a
+    log line. Nothing is reported while LDAP is disabled.
+    """
+    ldap = cfg.ldap
+    if not ldap.enabled:
+        return []
+    missing = [key for key, value in (("ldap.server", ldap.server), ("ldap.base_dn", ldap.base_dn)) if not value]
+    if missing:
+        detail = f"ldap.enabled is true but {' and '.join(missing)} not set; LDAP lookups are skipped"
+        return [DiagnosticCheck("ldap", False, detail, False)]
+    if importlib.util.find_spec("ldap3") is None:
+        detail = "ldap.enabled is true but ldap3 is not installed; install the ldap extra (pip install sova[ldap])"
+        return [DiagnosticCheck("ldap", False, detail, False)]
+    checks = [DiagnosticCheck("ldap", True, ldap.server, False)]
+    if ldap.team_mapping and not ldap.group_base_dn:
+        detail = "ldap.team_mapping set but ldap.group_base_dn not set; team lookups return no members"
+        checks.append(DiagnosticCheck("ldap.group_base_dn", False, detail, False))
+    return checks
 
 
 async def _check_llm_provider(project_dir: Path) -> list[DiagnosticCheck]:
