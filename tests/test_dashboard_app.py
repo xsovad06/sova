@@ -538,6 +538,29 @@ class TestNavigationDefinition:
         assert _sidebar_hrefs((await client.get("/work")).text) == expected
 
 
+class TestHomeScreen:
+    async def test_the_manifest_opens_the_home_page_standalone(self, client: AsyncClient) -> None:
+        resp = await client.get("/manifest.webmanifest")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/manifest+json")
+        manifest = resp.json()
+        assert manifest["start_url"] == "/phone"
+        assert manifest["display"] == "standalone"
+        assert manifest["scope"] == "/"
+        assert {icon["sizes"] for icon in manifest["icons"]} == {"192x192", "512x512"}
+        for icon in manifest["icons"]:
+            assert (await client.get(icon["src"])).status_code == 200
+
+    async def test_a_page_links_the_manifest_and_the_apple_web_app_tags(self, client: AsyncClient) -> None:
+        html = (await client.get("/work")).text
+        assert '<link rel="manifest" href="/manifest.webmanifest">' in html
+        assert "viewport-fit=cover" in html
+        assert "user-scalable=no" not in html and "maximum-scale" not in html, "pinch zoom stays on"
+        assert '<meta name="theme-color" content="#1e1e2e">' in html
+        assert '<meta name="apple-mobile-web-app-capable" content="yes">' in html
+        assert '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">' in html
+
+
 # ---------------------------------------------------------------------------
 # Auto-handoff orchestration
 # ---------------------------------------------------------------------------
@@ -874,6 +897,14 @@ class TestMultiProject:
         assert "/p/alpha/work" in hrefs
         assert "/setup" in hrefs
         assert not any(h in ("/work", "/settings") for h in hrefs)
+
+    async def test_a_project_manifest_starts_on_its_own_home_page(self, multi_client: AsyncClient) -> None:
+        manifest = (await multi_client.get("/p/alpha/manifest.webmanifest")).json()
+        assert manifest["start_url"] == "/p/alpha/phone"
+        assert manifest["id"] == "/p/alpha/phone"
+        assert manifest["name"] == "SOVA project-alpha"
+        html = (await multi_client.get("/p/alpha/work")).text
+        assert '<link rel="manifest" href="/p/alpha/manifest.webmanifest">' in html
 
     async def test_project_lifecycle_renders(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/lifecycle/42")

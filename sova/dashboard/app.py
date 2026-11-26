@@ -138,6 +138,10 @@ _WORK_URL = "/work"
 # the backend query would silently return zero rows for (or hide one it does).
 _STATUS_OPTIONS = [(status, status.replace("_", " ").capitalize()) for status in sorted(_TERMINAL)]
 _SWEEP_INTERVAL = 5  # seconds
+# The phone shell's home-screen colours: the top bar's surface (Catppuccin base) and the page behind it (mantle). A
+# manifest cannot read the CSS custom properties, so these repeat --ctp-base and --ctp-mantle from style.css.
+_APP_THEME_COLOR = "#1e1e2e"
+_APP_BACKGROUND_COLOR = "#181825"
 _RECOVERY_INTERVAL = 300  # 5 minutes
 # Probe cadence. With the tracker's decisive-probe rule this is also the
 # worst-case time for an outage to reach the operator's banner.
@@ -1127,6 +1131,7 @@ def create_app(
 
     templates.env.globals["awareness_enabled"] = _awareness_nav_enabled
     templates.env.globals["nav_links"] = _nav_links
+    templates.env.globals["app_theme_color"] = _APP_THEME_COLOR
     templates.env.globals["github_user"] = _footer_github_user
     templates.env.globals["priority_icon"] = priority_icon
     templates.env.globals["priorities_json"] = priorities_json
@@ -1271,6 +1276,13 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/p/{slug}/phone")
     async def project_phone(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "phone.html", "phone"))
+
+    @app.get("/p/{slug}/manifest.webmanifest")
+    async def project_manifest(slug: str) -> JSONResponse:
+        from sova.config.registry import get_project_path
+
+        project_path = get_project_path(slug)
+        return _manifest_response(f"/p/{slug}", f"SOVA {project_path.name if project_path else slug}")
 
     @app.get("/p/{slug}/work/{run_id}")
     async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:
@@ -1433,6 +1445,32 @@ def _project_page(
     return templates.TemplateResponse(request, template, ctx)
 
 
+def web_app_manifest(prefix: str, name: str) -> dict[str, object]:
+    """The web app manifest for a project at `prefix` ('' in single-project mode).
+
+    Added to the iOS or Android home screen, the dashboard opens on the phone Home page without browser chrome. The
+    scope is the whole site, so Add Project (`/setup`, outside any project prefix) stays inside the app window.
+    """
+    return {
+        "id": f"{prefix}/phone",
+        "name": name,
+        "short_name": "SOVA",
+        "start_url": f"{prefix}/phone",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": _APP_BACKGROUND_COLOR,
+        "theme_color": _APP_THEME_COLOR,
+        "icons": [
+            {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+        ],
+    }
+
+
+def _manifest_response(prefix: str, name: str) -> JSONResponse:
+    return JSONResponse(web_app_manifest(prefix, name), media_type="application/manifest+json")
+
+
 def _with_csrf_cookie(request: Request, response: Response) -> Response:
     """Issue a fresh double-submit CSRF cookie on a page that POSTs to a guarded endpoint.
 
@@ -1461,6 +1499,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/phone")
     async def phone_page(request: Request) -> Response:
         return _with_csrf_cookie(request, templates.TemplateResponse(request, "phone.html", {"page": "phone"}))
+
+    @app.get("/manifest.webmanifest")
+    async def manifest() -> JSONResponse:
+        return _manifest_response("", "SOVA")
 
     @app.get("/agents")
     async def agents_redirect() -> RedirectResponse:

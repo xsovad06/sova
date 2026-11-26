@@ -2,9 +2,20 @@
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  {#- viewport-fit=cover lets the phone shell draw under the notch and the home indicator; the top bar, the tab bar
+      and the sheets pad themselves with env(safe-area-inset-*). Pinch zoom stays on. -#}
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>{% block title %}SOVA Dashboard{% endblock %}</title>
   {% include "_head.html" %}
+  {#- Home screen: the manifest (app.py, web_app_manifest) opens the project's Home page without browser chrome.
+      The colour is the top bar's surface, the manifest's theme colour (app.py): a meta tag cannot read a CSS
+      custom property. -#}
+  <link rel="manifest" href="{{ prefix|default('') }}/manifest.webmanifest">
+  <meta name="theme-color" content="{{ app_theme_color }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SOVA">
   <script>
     if (localStorage.getItem('sova-sidebar-collapsed') === '1') {
       document.documentElement.style.setProperty('--sidebar-width', '64px');
