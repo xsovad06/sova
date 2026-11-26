@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import ColumnElement, and_, exists, false, func, or_, select
-from sqlalchemy.exc import InvalidRequestError, StatementError
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -318,7 +318,7 @@ def _build_history_item(r: TaskRun, step_names: set[str]) -> dict:
 
 async def get_work_detail(session: AsyncSession, run_id: int, project_dir: Path | None = None) -> dict | None:
     """Get a single run with its step executions and pipeline progress."""
-    run = await session.get(TaskRun, run_id, options=[selectinload(TaskRun.resource_summary)])
+    run = await _get_run_with_summary(session, run_id)
     if run is None:
         return None
 
@@ -457,7 +457,7 @@ async def list_runs(
 
 async def get_run(session: AsyncSession, run_id: int) -> dict | None:
     """Get a single task run by ID."""
-    run = await session.get(TaskRun, run_id, options=[selectinload(TaskRun.resource_summary)])
+    run = await _get_run_with_summary(session, run_id)
     return _run_to_dict(run) if run else None
 
 
@@ -486,7 +486,7 @@ async def get_run_steps(
 
 async def mark_run_failed(session: AsyncSession, run_id: int, reason: str = "Manually abandoned") -> dict | None:
     """Mark a non-terminal run as failed."""
-    run = await session.get(TaskRun, run_id, options=[selectinload(TaskRun.resource_summary)])
+    run = await _get_run_with_summary(session, run_id)
     if run is None:
         return None
     if run.status in _TERMINAL:
@@ -497,6 +497,18 @@ async def mark_run_failed(session: AsyncSession, run_id: int, reason: str = "Man
         run.ended_at = datetime.now(timezone.utc)
     await session.flush()
     return _run_to_dict(run)
+
+
+async def _get_run_with_summary(session: AsyncSession, run_id: int) -> TaskRun | None:
+    """Fetch a run with its resource summary loaded, for ``_run_to_dict``.
+
+    ``session.get()`` returns a run the session already holds without applying its ``selectinload``, so the
+    relationship is loaded here asynchronously rather than lazily (MissingGreenlet) or not at all.
+    """
+    run = await session.get(TaskRun, run_id, options=[selectinload(TaskRun.resource_summary)])
+    if run is not None and "resource_summary" in sa_inspect(run).unloaded:
+        await session.refresh(run, attribute_names=["resource_summary"])
+    return run
 
 
 def _run_to_dict(run: TaskRun) -> dict:
@@ -519,19 +531,18 @@ def _run_to_dict(run: TaskRun) -> dict:
     if run.assessment_json and "confidence_score" in run.assessment_json:
         result["confidence_score"] = run.assessment_json["confidence_score"]
         result["confidence_details"] = run.assessment_json.get("confidence_details")
-    # Include resource summary if eagerly loaded
-    try:
+    # Include resource summary only if already loaded: reading an unloaded relationship here would fire a sync
+    # lazy load, MissingGreenlet in async code, leaving the driver's cursor coroutine unawaited. Single-run
+    # callers load it first through _get_run_with_summary(). An unloaded summary is logged so the omitted
+    # metrics stay distinguishable from a run that never recorded one.
+    summary = None
+    if "resource_summary" in sa_inspect(run).unloaded:
+        logger.warning("work.run_to_dict.resource_summary_not_loaded", run_id=run.id)
+    else:
         summary = run.resource_summary
-        if summary is not None:
-            result["peak_cpu_percent"] = (
-                float(summary.peak_cpu_percent) if summary.peak_cpu_percent is not None else None
-            )
-            result["peak_memory_rss_bytes"] = summary.peak_memory_rss_bytes
-    except (InvalidRequestError, StatementError):
-        # A lazy load outside the async greenlet context (e.g. MissingGreenlet)
-        # surfaces wrapped as StatementError, not InvalidRequestError, when it
-        # occurs during actual statement execution rather than attribute access.
-        logger.warning("work.run_to_dict.resource_summary_not_loaded", run_id=run.id, exc_info=True)
+    if summary is not None:
+        result["peak_cpu_percent"] = float(summary.peak_cpu_percent) if summary.peak_cpu_percent is not None else None
+        result["peak_memory_rss_bytes"] = summary.peak_memory_rss_bytes
     return result
 
 

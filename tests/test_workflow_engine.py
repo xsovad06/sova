@@ -29,6 +29,7 @@ from sova.llm.errors import (
     ModelUnavailableError,
     RateLimitError,
 )
+from tests.conftest import closing_stand_in
 from tests.core_helpers import DummyStep, _make_ctx, _sova_commit_config
 
 # Every test in this module runs against the shared per-worker in-memory DB
@@ -2721,11 +2722,7 @@ class TestRunWorkflowCancellation:
 
         from sova.cli.commands.run import run_issue
 
-        def _raise_cancelled(coro):
-            coro.close()  # avoid a "coroutine was never awaited" warning
-            raise asyncio.CancelledError
-
-        with patch("sova.cli.commands.run.asyncio.run", side_effect=_raise_cancelled):
+        with patch("sova.cli.commands.run.asyncio.run", side_effect=closing_stand_in(raises=asyncio.CancelledError)):
             with pytest.raises(typer.Exit) as exc_info:
                 run_issue(issue="1")
 

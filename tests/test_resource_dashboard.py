@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import re
+import warnings
 from collections import deque
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
@@ -628,6 +630,29 @@ class TestRunToDict:
         runs = await list_runs(session, limit=10)
         run_dict = next(r for r in runs if r["id"] == seed_run_without_resources.id)
         assert "peak_cpu_percent" not in run_dict
+
+    @pytest.mark.asyncio
+    async def test_get_run_loads_the_summary_of_a_run_the_session_holds(
+        self, session: AsyncSession, seed_run_with_resources
+    ) -> None:
+        """A run already in the identity map comes back from ``session.get()`` without its selectinload applied.
+
+        Reading the unloaded relationship there would fire a sync lazy load, which fails with MissingGreenlet in
+        async code and leaves the driver's ``Connection.cursor`` coroutine unawaited; skipping it would drop the
+        run's peak metrics.
+        """
+        from sova.dashboard.services.work_service import get_run
+
+        gc.collect()  # finalize an earlier test's garbage outside the recording below
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run_dict = await get_run(session, seed_run_with_resources.id)
+            gc.collect()
+
+        assert run_dict is not None
+        assert run_dict.get("peak_cpu_percent") == 55.0
+        assert run_dict.get("peak_memory_rss_bytes") == 190_000_000
+        assert [str(w.message) for w in caught if "Connection.cursor" in str(w.message)] == []
 
 
 class TestAgentLiveMetrics:

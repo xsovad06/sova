@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import functools
+import inspect
 import json
 import logging
 import os
@@ -932,6 +933,27 @@ def csrf_request_headers(client: Any) -> dict[str, str]:
     token = "test-csrf-token"
     client.cookies.set(CSRF_COOKIE_NAME, token)
     return {"origin": "http://localhost:8111", CSRF_HEADER_NAME: token}
+
+
+def closing_stand_in(result: Any = None, *, raises: BaseException | type[BaseException] | None = None) -> Callable:
+    """Build a ``side_effect`` for a mocked ``asyncio.run``, ``wait_for`` or ``create_task`` that closes its coroutine.
+
+    A mock of one of these with only a ``return_value``, or a ``side_effect`` exception, drops the coroutine it
+    is handed without awaiting or closing it. Garbage collection finalizes it later, and its "never awaited"
+    warning fails whichever test happens to be running then, not the one that leaked it. The stand-in closes
+    the coroutine first, then raises ``raises`` when given and otherwise returns ``result``. An argument that
+    is not a coroutine (a future, a plain value) is left alone.
+    """
+
+    def stand_in(awaitable: object, *_args: object, **_kwargs: object) -> Any:
+        if inspect.iscoroutine(awaitable):
+            awaitable.close()
+        if raises is not None:
+            # An instance is raised on every call; drop its traceback so old frames (and their locals) are freed.
+            raise raises.with_traceback(None) if isinstance(raises, BaseException) else raises
+        return result
+
+    return stand_in
 
 
 @pytest.fixture(scope="module")
