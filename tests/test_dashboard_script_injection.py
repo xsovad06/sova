@@ -28,8 +28,6 @@ from urllib.parse import quote
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sova.dashboard.app import create_app
-
 _DASHBOARD = Path(__file__).resolve().parents[1] / "sova" / "dashboard"
 _HEAD = _DASHBOARD / "templates" / "_head.html"
 _APP_JS = _DASHBOARD / "static" / "app.js"
@@ -194,9 +192,10 @@ class TestMarkedCallSites:
 
 class TestSpecIssueNumberLiteral:
     @pytest.mark.parametrize("issue_number", ["42", "RHCLOUD-123", "7\\';x", '7"<b>x'])
-    async def test_issue_number_is_a_string_literal_holding_the_path_value(self, issue_number: str) -> None:
-        app = create_app(multi_project=False)
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async def test_issue_number_is_a_string_literal_holding_the_path_value(
+        self, dashboard_app, issue_number: str
+    ) -> None:
+        async with AsyncClient(transport=ASGITransport(app=dashboard_app), base_url="http://test") as client:
             resp = await client.get("/spec/" + quote(issue_number, safe=""))
 
         assert resp.status_code == 200
@@ -204,6 +203,177 @@ class TestSpecIssueNumberLiteral:
         literal = line.split("var _issueNumber = ", 1)[1].strip().removesuffix(";")
         assert json.loads(literal) == issue_number
         assert "<" not in literal
+
+
+class TestNumericPagePathLiterals:
+    """The lifecycle and run pages take an integer path value, and write it into their script as a number.
+
+    `lifecycle.html` hands its value to `issueLink()` and then `innerHTML`, so a markup path segment
+    must never reach the page: the route answers 422 for it before any template renders.
+    """
+
+    @pytest.mark.parametrize(
+        ("path", "var"), [("/lifecycle/42", "_ISSUE_NUMBER"), ("/work/7", "_RUN_ID")], ids=["lifecycle", "run"]
+    )
+    async def test_the_value_is_a_number_literal(self, dashboard_app, path: str, var: str) -> None:
+        async with AsyncClient(transport=ASGITransport(app=dashboard_app), base_url="http://test") as client:
+            resp = await client.get(path)
+        assert resp.status_code == 200
+        line = next(line for line in resp.text.splitlines() if f"var {var} = " in line)
+        assert isinstance(json.loads(line.split(" = ", 1)[1].strip().removesuffix(";")), int)
+
+    @pytest.mark.parametrize("prefix", ["/lifecycle/", "/work/"])
+    async def test_a_markup_path_segment_renders_no_page(self, dashboard_app, prefix: str) -> None:
+        async with AsyncClient(transport=ASGITransport(app=dashboard_app), base_url="http://test") as client:
+            resp = await client.get(prefix + quote(_PAYLOAD, safe=""))
+        # FastAPI's validation error echoes the input, but as JSON under nosniff, never as a page.
+        assert resp.status_code == 422
+        assert resp.headers["content-type"] == "application/json"
+        assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+# A Jinja value written into a JS string by hand: autoescaping is for HTML, so a backslash or a
+# quote in the value ends the literal early, and inside a template literal a `${...}` in the value
+# runs as code. `|tojson` emits the whole literal instead, so it must stand outside any quotes too:
+# `"{{ x|tojson }}"` nests the value's own quotes inside the author's.
+_SCRIPT_BLOCK_RE = re.compile(r"<script\b[^>]*>(.*?)</script>", re.DOTALL)
+_JINJA_TAGS = {"{{": "}}", "{%": "%}", "{#": "#}"}
+# A `/` after one of these (or at the start) opens a regex literal, not a division. A heuristic, not a
+# JS parser: `return /x/` and a regex after `)` (`if (a) /x/.test(b)`) are read as division, which
+# can only make the scan miss a literal after them, never invent one.
+_REGEX_PRECEDERS = frozenset("(,=:[!&|?{};+-*%<>~^")
+# An inline event handler (`onclick="..."`): HTML autoescaping turns `'` into `&#39;`, which the parser
+# decodes back before the JS runs, and `|tojson`'s double quotes end a double-quoted attribute, so no
+# Jinja value belongs in one. A `data-*` attribute read by the handler is the safe pattern.
+_EVENT_HANDLER_RE = re.compile(r"""\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|(?:\{\{.*?\}\}|[^\s>])+)""", re.IGNORECASE)
+
+
+def _skip_regex(script: str, pos: int) -> int:
+    """Index just past the regex literal that starts at `pos`, or past the line when it never closes."""
+    end = pos + 1
+    in_class = False
+    while end < len(script) and script[end] != "\n":
+        ch = script[end]
+        if ch == "\\":
+            end += 2
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch == "]":
+            in_class = False
+        elif ch == "/" and not in_class:
+            return end + 1
+        end += 1
+    return end
+
+
+def _js_string_literals(script: str) -> list[str]:
+    """Every '...', "..." and `...` literal in `script`, skipping comments, regex literals and Jinja tags."""
+    literals: list[str] = []
+    pos = 0
+    previous = ""
+    while pos < len(script):
+        ch = script[pos]
+        opener = script[pos : pos + 2]
+        if opener in _JINJA_TAGS:
+            close = script.find(_JINJA_TAGS[opener], pos + 2)
+            pos = len(script) if close < 0 else close + 2
+            previous = "x"
+            continue
+        if opener == "//":
+            newline = script.find("\n", pos)
+            pos = len(script) if newline < 0 else newline
+            continue
+        if opener == "/*":
+            close = script.find("*/", pos + 2)
+            pos = len(script) if close < 0 else close + 2
+            continue
+        if ch == "/" and (not previous or previous in _REGEX_PRECEDERS):
+            pos = _skip_regex(script, pos)
+            previous = "x"
+            continue
+        if ch in "'\"`":
+            end = _skip_string(script, pos)
+            literals.append(script[pos:end])
+            pos = end
+            previous = "x"
+            continue
+        if not ch.isspace():
+            previous = ch
+        pos += 1
+    return literals
+
+
+def _jinja_in_event_handlers(text: str) -> list[str]:
+    """Every inline event-handler attribute outside a <script> block of `text` that holds a `{{ ... }}`."""
+    html = _SCRIPT_BLOCK_RE.sub("", text)
+    return [m.group(0).strip() for m in _EVENT_HANDLER_RE.finditer(html) if "{{" in m.group(1)]
+
+
+def _quoted_jinja_in_scripts(text: str) -> list[str]:
+    """Every JS string literal inside a <script> block of `text` that holds a `{{ ... }}`, `|tojson` or not."""
+    return [
+        literal
+        for block in _SCRIPT_BLOCK_RE.finditer(text)
+        for literal in _js_string_literals(block.group(1))
+        if "{{" in literal
+    ]
+
+
+class TestScriptBlockJinjaLiterals:
+    def test_no_template_quotes_a_jinja_value_inside_a_script(self) -> None:
+        offenders = [
+            f"{path.relative_to(_DASHBOARD)}: {site}"
+            for path in sorted((_DASHBOARD / "templates").rglob("*.html"))
+            for site in _quoted_jinja_in_scripts(path.read_text(encoding="utf-8"))
+        ]
+        assert offenders == [], "use {{ value|tojson }} instead of quoting a Jinja value in a script"
+
+    def test_no_template_puts_a_jinja_value_in_an_event_handler(self) -> None:
+        offenders = [
+            f"{path.relative_to(_DASHBOARD)}: {site}"
+            for path in sorted((_DASHBOARD / "templates").rglob("*.html"))
+            for site in _jinja_in_event_handlers(path.read_text(encoding="utf-8"))
+        ]
+        assert offenders == [], "pass the value in a data-* attribute and read it in the handler"
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("""<button onclick="go('{{ x }}')">a</button>""", ["""onclick="go('{{ x }}')\""""]),
+            ("<a onmouseover='f({{ x|tojson }})'>a</a>", ["onmouseover='f({{ x|tojson }})'"]),
+            ("<a ONCLICK={{ x }}>a</a>", ["ONCLICK={{ x }}"]),
+            ('<button onclick="go(this.dataset.id)" data-id="{{ x }}">a</button>', []),
+            ("""<script>el.innerHTML = '<b onclick="f()">' + n;</script>""", []),
+        ],
+        ids=["double-quoted", "tojson-single-quoted", "unquoted", "data-attribute", "inside-script"],
+    )
+    def test_handler_scan_flags_any_jinja_value(self, source: str, expected: list[str]) -> None:
+        assert _jinja_in_event_handlers(source) == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("<script>var a = '{{ x }}';</script>", ["'{{ x }}'"]),
+            ('<script type="module">fetch("/w/{{ run_id }}/x");</script>', ['"/w/{{ run_id }}/x"']),
+            ("<script>var a = {{ x|tojson }};</script>", []),
+            ("<p title='{{ x }}'></p><script>var a = 1;</script>", []),
+            ("<script>var a = `{{ x }}`;</script>", ["`{{ x }}`"]),
+            ("<script>var a = `<b>${n}</b>{{ x }}`;</script>", ["`<b>${n}</b>{{ x }}`"]),
+            ('<script>var a = "it\'s {{ x }}";</script>', ['"it\'s {{ x }}"']),
+            ("<script>var a = 'say \"{{ x }}\"';</script>", ["'say \"{{ x }}\"'"]),
+            ('<script>var a = "{{ x|tojson }}";</script>', ['"{{ x|tojson }}"']),
+            ('<script>fetch("/w/" + {{ id|tojson }} + "/x");</script>', []),
+            ("<script>var a = {{ url_for('x')|tojson }}; // don't\nvar b = 'ok';</script>", []),
+            ("<script>/* it's */ var a = {% if y == 'z' %}1{% endif %};</script>", []),
+            ("<script>var r = /['\"]/g; var a = '{{ x }}';</script>", ["'{{ x }}'"]),
+            ("<script>var r = s.replace(/\\//g, ''); var a = '{{ x }}';</script>", ["'{{ x }}'"]),
+            ("<script>var r = /[/'] // x/; var a = '{{ x }}';</script>", ["'{{ x }}'"]),
+            ("<script>var h = w / 2; var a = '{{ x }}';</script>", ["'{{ x }}'"]),
+        ],
+    )
+    def test_scan_finds_only_unencoded_quoted_values(self, source: str, expected: list[str]) -> None:
+        assert _quoted_jinja_in_scripts(source) == expected
 
 
 # ---------------------------------------------------------------------------

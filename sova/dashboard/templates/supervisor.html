@@ -218,7 +218,7 @@
 {% block scripts %}
 <script src="/static/d3.min.js"></script>
 <script>
-const prefix = '{{ prefix|default("") }}';
+const prefix = {{ prefix|default("")|tojson }};
 const apiBase = prefix ? `${prefix}/api` : '/api';
 const githubRepo = {{ github_repo | tojson }};
 
