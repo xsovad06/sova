@@ -19,7 +19,8 @@ from sova.db.session import _get_database_url
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep loggers created before a migration (httpx, the app's own) alive: the default disables them process-wide.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
