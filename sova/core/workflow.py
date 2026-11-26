@@ -28,7 +28,7 @@ from sova.core.output import OutputWriter
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.db.models import FAILURE_ANNOUNCED_KEY, CostRecord, FailureRecord, StepExecution, TaskRun
-from sova.db.session import get_session
+from sova.db.session import get_session, redact_database_url
 from sova.ipc.notifications import NotificationKind, notify
 from sova.llm.client import running_role, start_call_counter
 from sova.llm.errors import is_billing_failure, is_configuration_failure
@@ -1031,7 +1031,10 @@ class WorkflowEngine:
         async with await get_session(self._ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, self._task_run_id)
             if not task_run:
-                db_url = os.environ.get("SOVA_DATABASE_URL", str(self._ctx.project_dir / ".claude" / "sova.db"))
+                # Only an env-supplied URL can hold a credential; the default is a plain file path, kept
+                # verbatim (a path may contain "@", which the URL redactor would replace).
+                env_url = os.environ.get("SOVA_DATABASE_URL")
+                db_url = redact_database_url(env_url) if env_url else str(self._ctx.project_dir / ".claude" / "sova.db")
                 log.error(
                     "workflow.adopt_missing_task_run",
                     run_id=self._task_run_id,
