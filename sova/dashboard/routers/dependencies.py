@@ -11,7 +11,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters.base import TaskState
 from sova.config.context import get_project_dir
 from sova.config.loader import load_config
-from sova.dashboard.services.pr_service import ComputedPRState
 from sova.dashboard.services.work_item_service import GraphConfigError as _ConfigError
 from sova.dashboard.services.work_item_service import (
     load_dependency_graph,
@@ -19,9 +18,10 @@ from sova.dashboard.services.work_item_service import (
     next_task_exclusions,
     rank_graph_entries,
 )
-from sova.dashboard.services.work_state import state_color, state_label
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
+from sova.work.pr_state import ComputedPRState
+from sova.work.state import state_color, state_label
 
 log = get_logger(component="dashboard.api.dependencies")
 
@@ -204,7 +204,7 @@ async def _fetch_last_run_map() -> dict[int, dict]:
 
 
 def _state_display(state: str) -> dict[str, str]:
-    """The label and color token the client renders for a tracker state, from ``work_state``."""
+    """The label and color token the client renders for a tracker state, from ``sova.work.state``."""
     return {"state_label": state_label(state), "state_color": state_color(state)}
 
 

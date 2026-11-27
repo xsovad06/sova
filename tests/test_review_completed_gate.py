@@ -124,7 +124,7 @@ class TestCheckReviewCompletedGate:
             "run_status": "done",
         }
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value=verdict,
         ):
@@ -151,7 +151,7 @@ class TestCheckReviewCompletedGate:
             "run_status": "done",
         }
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value=verdict,
         ):
@@ -175,7 +175,7 @@ class TestCheckReviewCompletedGate:
             "run_status": "done",
         }
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value=verdict,
         ):
@@ -225,7 +225,7 @@ class TestCheckReviewCompletedGate:
             "thread_resolved": 0,
         }
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value=verdict,
         ):
@@ -248,7 +248,7 @@ class TestCheckReviewCompletedGate:
         """
         verdict = {"has_sova_review": False, "verdict": None}
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value=verdict,
         ):
@@ -266,7 +266,7 @@ class TestCheckReviewCompletedGate:
     async def test_blocks_with_block_label_and_no_other_source(self, tmp_path: Path) -> None:
         verdict = {"has_sova_review": False, "verdict": None}
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value=verdict,
         ):
@@ -284,7 +284,7 @@ class TestCheckReviewCompletedGate:
     async def test_blocks_with_no_review(self, tmp_path: Path) -> None:
         verdict = {"has_sova_review": False, "verdict": None}
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value=verdict,
         ):
@@ -309,7 +309,7 @@ class TestCheckReviewCompletedGate:
             "thread_resolved": 0,
         }
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value=verdict,
         ):
@@ -326,7 +326,7 @@ class TestCheckReviewCompletedGate:
     @pytest.mark.asyncio
     async def test_db_error_falls_through(self, tmp_path: Path) -> None:
         with patch(
-            "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+            "sova.work.verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
             side_effect=Exception("DB error"),
         ):

@@ -25,11 +25,29 @@ The issue stays open for the items below. A pull request for a slice references 
 
 | Item | Why it is deferred | What closes it |
 |------|--------------------|----------------|
-| Consolidate `feed_service`, `work_state`, `work_verdict` and `pr_service` into a workflow package | A package move touching many importers and patch targets | #1272, as `sova/work/`: a separate change that migrates the importers and deletes the old paths |
-| Remove the upward imports left in the `ignore_imports` baseline | Most are `supervisor`, `roles` and `core` importing `dashboard.services`, which only the package move above untangles | #1274: delete each baseline entry as its import goes (an entry that no longer matches fails CI, so the baseline can only shrink) |
+| Remove the upward imports left in the `ignore_imports` baseline | Most are `supervisor` and `core` importing `dashboard.services` (`agent_lifecycle`, `agent_recovery`, `supervisor_service`), which #1273's move of the `agent_*` run management untangles | #1274: delete each baseline entry as its import goes (an entry that no longer matches fails CI, so the baseline can only shrink) |
 | Split the remaining god modules: `llm/client.py`, `dashboard/services/agent_recovery.py`, `core/workflow.py`, `dashboard/services/setup_service.py`, `git/worktree.py` | Each split needs its own seam analysis | One change per module; #1386 covers `agent_recovery.py` and the `agent_*` decomposition |
 | Delete `dashboard/services/control_service.py` | It is a thin re-export facade with 36 patch targets in tests; the decision is to delete it, not document it as an API | #1273: migrate the importers to the owning modules and delete the facade |
 | Give the underscore-private `sova.ipc` names other packages import public names: the Codex helpers `sova/roles/reviewer.py` imports (`_codex_exec_args`, `_resolve_codex_api_key`, `_resolve_codex_cost_source`), `_codex_extra_env` from `sova.ipc.codex_runtime` and `_PIPELINE_ROLES` from `sova.ipc.runtime`, both imported by `sova/dashboard/services/agent_lifecycle.py` | They are underscore-private names reached across a package boundary, a coupling that predates the Codex move; the move left it as is | A change that renames them in `sova/ipc/codex_runtime.py` and `sova/ipc/runtime.py` (or exposes one public function each caller uses) and updates `reviewer.py`, `agent_lifecycle.py` and their tests |
+
+### Behaviour changes in the work package move (#1272)
+
+`feed_service`, `work_state`, `work_verdict` and `pr_service` moved into `sova/work/` (`feed.py`, `state.py`,
+`verdict.py`, `pr_state.py`), a sibling of `sova.core` in the layers contract, and the 16 baseline entries
+they carried are gone. No resolver, verdict, PR-state or feed logic changed, and the log component and event
+names stay as they were (`dashboard.pr_service`, `dashboard.feed`). What changed for callers and tests:
+
+- The helpers callers outside `sova/work/` use are public: `build_pr_facts()` (the supervisor), and
+  `get_actions()`, `build_action()`, `sort_items()` and `fetch_sova_verdicts()` (the dashboard's work items).
+  `work_item_service` no longer re-exports `_LABEL_STATE_MAP`, `_SPEC_ACTION_IDS`, `_STATE_SORT_ORDER` or
+  `_sova_verdict_cache`, and compares a run's status with `TaskStatus.AWAITING_APPROVAL` directly.
+- `sova.work.pr_state.list_open_prs_with_state()` takes `default_project_dir` instead of reading the
+  dashboard's startup default; `sova.dashboard.services.pr_service.list_open_prs_with_state()` supplies it,
+  and the PR monitor now passes its project explicitly. A test of a dashboard caller patches the dashboard
+  function, a test of a supervisor caller the `sova.work.pr_state` one.
+- `FeedService.history_page()`, `prune_old_events()` and `to_sse()` held no instance state, so they are
+  module functions in `sova.dashboard.services.feed_service`; the emit, persist and subscribe side and the
+  `get_feed_service()` singleton live in `sova.work.feed`.
 
 ### Behaviour changes in the second slice
 

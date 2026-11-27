@@ -274,7 +274,7 @@ async def drain_feed_persist() -> None:
     that queries feed rows after emitting calls it before the query. A no-op
     when nothing is pending.
     """
-    from sova.dashboard.services.feed_service import get_feed_service
+    from sova.work.feed import get_feed_service
 
     await get_feed_service().drain_persist()
 

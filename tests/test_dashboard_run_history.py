@@ -20,9 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.dashboard.services import work_service
 from sova.dashboard.services.work_service import get_work_history
-from sova.dashboard.services.work_state import RUN_ACTIONS, VARIANT_ACTIONS, run_action, run_actions_payload
 from sova.db.models import StepExecution, TaskRun
 from sova.db.session import get_session
+from sova.work.state import RUN_ACTIONS, VARIANT_ACTIONS, run_action, run_actions_payload
 from tests.conftest import AGENTS_PAGE_JS_DIR, DASHBOARD_DIR
 
 pytestmark = pytest.mark.usefixtures("reset_db_rows")

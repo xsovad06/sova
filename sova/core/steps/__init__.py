@@ -4,7 +4,7 @@ Provides the built-in ordered step lists for each pipeline variant, a
 name-to-class registry (STEP_REGISTRY), and builders that turn user-configured
 step name lists into instantiated pipelines.
 
-Allowed imports: sova.core, sova.llm, sova.git, sova.ipc, sova.adapters, sova.db, sova.config, sova.utils.
+Allowed imports: sova.core, sova.work, sova.llm, sova.git, sova.ipc, sova.adapters, sova.db, sova.config, sova.utils.
 Outside the layers contract (import-linter does not check these): sova.commands.
 """
 

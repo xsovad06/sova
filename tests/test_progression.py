@@ -4493,7 +4493,7 @@ class TestStaleInProgressReset:
             pr_number=55,
         )
         with (
-            patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit,
+            patch("sova.work.feed.emit_safe") as mock_emit,
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
             patch(
                 "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
@@ -4638,7 +4638,7 @@ class TestStaleInProgressReset:
 
         with (
             patch.object(_recovery_mod, "rollback_issue_state", new_callable=AsyncMock) as mock_rollback,
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
         ):
             result = await engine.execute_decision(decision)
         assert result["reset"] is True
@@ -4663,7 +4663,7 @@ class TestStaleInProgressReset:
             patch(
                 "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
             ),
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
         ):
             result = await engine.execute_decision(decision)
         assert result["reset"] is True
@@ -4924,7 +4924,7 @@ class TestFetchEnrichedPr:
             {"number": 200, "state": "OPEN"},
         ]
         with patch(
-            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            "sova.work.pr_state.list_open_prs_with_state",
             new_callable=AsyncMock,
             return_value=prs,
         ):
@@ -4936,7 +4936,7 @@ class TestFetchEnrichedPr:
         engine = _make_engine(SupervisorConfig())
         prs = [{"number": 200, "state": "OPEN"}]
         with patch(
-            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            "sova.work.pr_state.list_open_prs_with_state",
             new_callable=AsyncMock,
             return_value=prs,
         ):
@@ -4947,7 +4947,7 @@ class TestFetchEnrichedPr:
     async def test_returns_none_on_error(self) -> None:
         engine = _make_engine(SupervisorConfig())
         with patch(
-            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            "sova.work.pr_state.list_open_prs_with_state",
             new_callable=AsyncMock,
             side_effect=Exception("network error"),
         ):

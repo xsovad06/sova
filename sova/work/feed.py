@@ -1,0 +1,229 @@
+"""Activity feed event bus: in-memory ring buffer, subscriber fan-out and DB persistence.
+
+Captures significant operations (agent lifecycle, batch progress, handoff
+state changes, pipeline steps) and fans them out to subscribers, which the
+dashboard streams to connected browser tabs via SSE.
+
+The in-memory ring buffer drives SSE fan-out and fast reconnection gap-fill.
+Events are also persisted to the ``feed_events`` table so the chat-style
+cockpit timeline (issue #852) has durable history that survives page reloads
+and server restarts. The read and query side (paginated history, pruning, SSE
+framing) lives in ``sova.dashboard.services.feed_service``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import itertools
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy.exc import SQLAlchemyError
+
+from sova.db.session import get_session
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.feed")
+
+
+class FeedEventSeverity(str, Enum):
+    info = "info"
+    success = "success"
+    warning = "warning"
+    error = "error"
+
+
+@dataclass
+class FeedEvent:
+    id: int
+    severity: FeedEventSeverity
+    title: str
+    detail: str | None = None
+    category: str = "system"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "severity": self.severity.value,
+            "title": self.title,
+            "detail": self.detail,
+            "category": self.category,
+            "metadata": self.metadata,
+            "timestamp": self.timestamp,
+        }
+
+
+_BUFFER_SIZE = 500
+_QUEUE_MAX = 100
+
+
+class FeedService:
+    """Singleton event bus: ring buffer + fan-out to SSE subscribers + DB history."""
+
+    def __init__(self) -> None:
+        self._buffer: deque[FeedEvent] = deque(maxlen=_BUFFER_SIZE)
+        self._subscribers: dict[int, asyncio.Queue[FeedEvent]] = {}
+        self._id_counter = itertools.count(1)
+        self._sub_counter = 0
+        # Holds references to in-flight persistence tasks so they are not
+        # garbage-collected before they finish (asyncio only holds weak refs).
+        self._pending_persist: set[asyncio.Task[None]] = set()
+        # Serializes DB writes: concurrent AsyncSessions can share a single
+        # underlying DBAPI connection (e.g. SQLite's StaticPool for in-memory
+        # test databases), where interleaved transactions from unserialized
+        # concurrent commits can silently drop or reorder writes.
+        self._persist_lock = asyncio.Lock()
+
+    async def init_counter(self, project_dir: Path | None = None) -> None:
+        """Advance the in-memory id counter past the DB max id at startup.
+
+        The in-memory ``FeedEvent.id`` and the persisted ``FeedEventRecord.id``
+        share one id space: ``_persist()`` writes the event's id as the primary
+        key. Without seeding, the counter would restart at 1 after a process
+        restart and collide with already-persisted rows, corrupting client-side
+        dedup, ordering, and the pagination cursor.
+
+        Safe to call once per project (multi-project mode): the counter only
+        advances, never rewinds, so after seeding from every project it sits
+        above the highest persisted id across all of them. Only counts not yet
+        handed out are affected, so concurrent emit() during startup is safe.
+        """
+        try:
+            from sqlalchemy import func, select
+
+            from sova.db.models import FeedEventRecord
+
+            async with await get_session(project_dir) as session:
+                max_id = (await session.execute(select(func.max(FeedEventRecord.id)))).scalar()
+            if max_id:
+                current = next(self._id_counter)
+                self._id_counter = itertools.count(max(current, max_id + 1))
+        except (OSError, RuntimeError, SQLAlchemyError):
+            log.debug("feed.init_counter_failed", exc_info=True)
+
+    def emit(
+        self,
+        title: str,
+        *,
+        severity: FeedEventSeverity = FeedEventSeverity.info,
+        detail: str | None = None,
+        category: str = "system",
+        metadata: dict[str, Any] | None = None,
+    ) -> FeedEvent:
+        event = FeedEvent(
+            id=next(self._id_counter),
+            severity=severity,
+            title=title,
+            detail=detail,
+            category=category,
+            metadata=metadata or {},
+        )
+        self._buffer.append(event)
+
+        for queue in self._subscribers.values():
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # drop for slow consumers
+
+        self._schedule_persist(event)
+        log.debug("Feed event emitted", event_id=event.id, title=title)
+        return event
+
+    def _schedule_persist(self, event: FeedEvent) -> None:
+        """Persist the event to the DB as a non-blocking background task.
+
+        No-op when there is no running event loop (e.g. sync CLI contexts):
+        persistence is a best-effort side effect, never fatal to emit().
+        The active project_dir is captured now because the background task
+        runs outside the request's contextvar scope.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        from sova.config.context import get_project_dir
+
+        project_dir = get_project_dir()
+        task = loop.create_task(self._persist(event, project_dir))
+        self._pending_persist.add(task)
+        task.add_done_callback(self._pending_persist.discard)
+
+    async def drain_persist(self) -> None:
+        """Await all in-flight persistence tasks. Call before close_db()."""
+        if self._pending_persist:
+            await asyncio.gather(*self._pending_persist, return_exceptions=True)
+
+    async def _persist(self, event: FeedEvent, project_dir: Path | None) -> None:
+        try:
+            from sova.db.models import FeedEventRecord
+
+            async with self._persist_lock, await get_session(project_dir) as session:
+                record = FeedEventRecord(
+                    id=event.id,  # keep the in-memory id and DB id in one space
+                    severity=event.severity.value,
+                    title=event.title[:500],
+                    detail=event.detail,
+                    category=event.category[:64],
+                    metadata_json=event.metadata or None,
+                    created_at=datetime.fromtimestamp(event.timestamp, tz=timezone.utc),
+                )
+                session.add(record)
+                await session.commit()
+        except (OSError, RuntimeError, SQLAlchemyError):
+            log.debug("feed.persist_failed", event_id=event.id, exc_info=True)
+
+    def subscribe(self) -> tuple[int, asyncio.Queue[FeedEvent]]:
+        self._sub_counter += 1
+        sub_id = self._sub_counter
+        queue: asyncio.Queue[FeedEvent] = asyncio.Queue(maxsize=_QUEUE_MAX)
+        self._subscribers[sub_id] = queue
+        return sub_id, queue
+
+    def unsubscribe(self, sub_id: int) -> None:
+        self._subscribers.pop(sub_id, None)
+
+    def history(self, since_id: int = 0) -> tuple[list[FeedEvent], bool]:
+        """Return events after since_id and whether a gap was detected."""
+        oldest_id = self._buffer[0].id if self._buffer else 0
+        gap = since_id > 0 and oldest_id > 0 and since_id < oldest_id
+        return [e for e in self._buffer if e.id > since_id], gap
+
+
+_feed_service: FeedService | None = None
+
+
+def get_feed_service() -> FeedService:
+    global _feed_service
+    if _feed_service is None:
+        _feed_service = FeedService()
+    return _feed_service
+
+
+def emit_safe(
+    title: str,
+    *,
+    severity: FeedEventSeverity = FeedEventSeverity.info,
+    detail: str | None = None,
+    category: str = "system",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Emit a feed event, swallowing exceptions (non-fatal side effect)."""
+    try:
+        get_feed_service().emit(
+            title,
+            severity=severity,
+            detail=detail,
+            category=category,
+            metadata=metadata,
+        )
+    except Exception:  # noqa: BLE001 (feed emission must never break the caller that reports the event)
+        log.debug("feed.emit_safe_failed", exc_info=True)

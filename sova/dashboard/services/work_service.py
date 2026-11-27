@@ -26,16 +26,16 @@ from sova.dashboard.services.agent_progress import (
     get_step_progress,
 )
 from sova.dashboard.services.run_outcome import run_outcome
-from sova.dashboard.services.work_state import (
+from sova.db.models import StepExecution, TaskRun
+from sova.utils.formatting import decimal_to_json, format_cost_usd, iso_utc
+from sova.utils.logging import get_logger
+from sova.work.state import (
     AUTO_ACTION_KEY,
     COMMAND_PREFIX,
     ROLE_ACTIONS,
     VARIANT_ACTIONS,
     run_action,
 )
-from sova.db.models import StepExecution, TaskRun
-from sova.utils.formatting import decimal_to_json, format_cost_usd, iso_utc
-from sova.utils.logging import get_logger
 
 logger = get_logger(component="dashboard.work_service")
 
@@ -138,7 +138,7 @@ async def get_work_history(
     """Finished runs, newest first by start time, with the filtered count, cost and failed count.
 
     ``since`` is inclusive and ``until`` exclusive, both on ``started_at``, which is also the sort key, so a window
-    and its ordering agree. ``action`` is a key of the run action table (``work_state.RUN_ACTIONS``, or a command
+    and its ordering agree. ``action`` is a key of the run action table (``sova.work.state.RUN_ACTIONS``, or a command
     name), ``number`` an issue number, tracker key or PR number (a leading ``#`` is ignored). ``failed_total`` counts
     failed runs matching every filter except ``status``, for the Failed tab. Returns ``{"tasks": [...], "total": N,
     "total_cost_usd": "...", "failed_total": N}``.
@@ -235,7 +235,8 @@ def _address_review_variant_clause() -> ColumnElement[bool]:
 
 _VARIANT_CLAUSES = {"address_review": _address_review_variant_clause}
 
-# A variant added to work_state.VARIANT_ACTIONS without a SQL twin here would make every action-filtered request raise.
+# A variant added to sova.work.state.VARIANT_ACTIONS without a SQL twin here would make every action-filtered
+# request raise.
 _MISSING_VARIANT_CLAUSES = {v for by_variant in VARIANT_ACTIONS.values() for v in by_variant} - _VARIANT_CLAUSES.keys()
 if _MISSING_VARIANT_CLAUSES:  # not an assert: python -O would strip it
     raise RuntimeError(f"no SQL clause for work_state variants {sorted(_MISSING_VARIANT_CLAUSES)}")
@@ -251,7 +252,7 @@ def _role_clause(role: str) -> ColumnElement[bool]:
 
 
 def _action_clause(key: str) -> ColumnElement[bool]:
-    """Runs whose ``run_action()`` key is ``key``: the SQL side of the action table in ``work_state``."""
+    """Runs whose ``run_action()`` key is ``key``: the SQL side of the action table in ``sova.work.state``."""
     clauses: list[ColumnElement[bool]] = []
     if key == AUTO_ACTION_KEY:
         # run_action() reports a run with no stored role as "auto".

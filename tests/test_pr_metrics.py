@@ -585,7 +585,7 @@ async def _events_for(project_dir: Path, pr_number: int) -> list[PREvent]:
 
 class TestStateTransitionRecording:
     def test_computed_to_event_mapping(self) -> None:
-        from sova.dashboard.services.pr_service import _COMPUTED_TO_EVENT
+        from sova.work.pr_state import _COMPUTED_TO_EVENT
 
         assert _COMPUTED_TO_EVENT["approved"] == "approved"
         assert _COMPUTED_TO_EVENT["approved_ci_green"] == "approved"
@@ -594,7 +594,7 @@ class TestStateTransitionRecording:
         assert "draft" not in _COMPUTED_TO_EVENT
 
     async def test_record_state_transitions_per_event_isolation(self, tmp_path: Path) -> None:
-        from sova.dashboard.services.pr_service import _record_state_transitions
+        from sova.work.pr_state import _record_state_transitions
 
         prs = [
             {
@@ -604,7 +604,7 @@ class TestStateTransitionRecording:
                 "author": "testuser",
             }
         ]
-        from sova.dashboard.services.pr_service import _last_known_states
+        from sova.work.pr_state import _last_known_states
 
         _last_known_states[500] = "awaiting_review"
         await _record_state_transitions(prs, repo="o/r", project_dir=tmp_path)
@@ -615,7 +615,7 @@ class TestStateTransitionRecording:
         assert events[0].metadata_json == {"computed_state": "approved", "prev_state": "awaiting_review"}
 
     async def test_record_state_no_transition(self, tmp_path: Path) -> None:
-        from sova.dashboard.services.pr_service import _last_known_states, _record_state_transitions
+        from sova.work.pr_state import _last_known_states, _record_state_transitions
 
         _last_known_states[501] = "approved"
         prs = [{"number": 501, "computed_state": "approved", "updated_at": "", "author": "u"}]
@@ -625,7 +625,7 @@ class TestStateTransitionRecording:
         assert await _events_for(tmp_path, 501) == []
 
     async def test_record_state_first_seen(self, tmp_path: Path) -> None:
-        from sova.dashboard.services.pr_service import _last_known_states, _record_state_transitions
+        from sova.work.pr_state import _last_known_states, _record_state_transitions
 
         _last_known_states.pop(502, None)
         prs = [{"number": 502, "computed_state": "approved", "updated_at": "", "author": "u"}]
@@ -634,7 +634,7 @@ class TestStateTransitionRecording:
         _last_known_states.pop(502, None)
 
     async def test_record_state_unmapped_transition(self, tmp_path: Path) -> None:
-        from sova.dashboard.services.pr_service import _last_known_states, _record_state_transitions
+        from sova.work.pr_state import _last_known_states, _record_state_transitions
 
         _last_known_states[503] = "approved"
         prs = [{"number": 503, "computed_state": "draft", "updated_at": "", "author": "u"}]

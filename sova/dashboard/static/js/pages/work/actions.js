@@ -51,7 +51,7 @@ export async function queueIssue(issue) {
 }
 
 // Start the agent an issue's stage calls for: `role` is its board entry's `start` action's role (the server's
-// work_state.start_action()), so a triaged issue gets the researcher and a researched one the developer. With no
+// sova.work.state.start_action()), so a triaged issue gets the researcher and a researched one the developer. With no
 // free slot the server refuses with code no_free_slot, and the issue is queued instead; the returned message
 // says which happened.
 export async function startOrQueue(issue, role) {
@@ -133,7 +133,7 @@ function _prCommand(issue, prNumber, command) {
   return _runCommand(issue, command, args);
 }
 
-// One of the work item's own actions (the board entry's `actions`, from work_state on the server): its
+// One of the work item's own actions (the board entry's `actions`, from sova.work.state on the server): its
 // handler and arguments say what to run, so the page needs no table of which state offers what. An action
 // carrying merge_blockers (an Integrate on a PR not fully ready) asks first, listing each unmet condition, in
 // the warning style (which opens with Cancel focused).

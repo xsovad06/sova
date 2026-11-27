@@ -137,7 +137,7 @@ class ConnectivityTracker:
         # the feed showing a stale "lost" message while the tracker itself
         # already reports healthy.
         try:
-            from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+            from sova.work.feed import FeedEventSeverity, emit_safe
 
             detail = (
                 "Agent spawning is paused. Interrupted runs resume automatically once the connection returns."

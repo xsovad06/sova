@@ -105,7 +105,7 @@ def _unresolved_thread_count(pr_data: dict | None) -> int | None:
     if pr_data is None:
         return 0
 
-    from sova.dashboard.services.pr_service import get_unresolved_thread_count
+    from sova.work.pr_state import get_unresolved_thread_count
 
     return get_unresolved_thread_count(pr_data)
 
@@ -126,7 +126,7 @@ async def _has_review_marker(
     gap" note.
     """
     try:
-        from sova.dashboard.services.work_verdict import resolve_verdict_for_pr
+        from sova.work.verdict import resolve_verdict_for_pr
 
         verdict = await resolve_verdict_for_pr(str(issue_number), pr_number=pr_number, project_dir=project_dir)
         return verdict.get("has_sova_review", False)

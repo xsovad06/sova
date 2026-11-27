@@ -531,7 +531,7 @@ class PRReviewData:
     and COMMENT), each as ``{"state", "body", "submitted_at", "author"}``
     (``author`` is the review's lowercased GitHub login, or ``""`` when GitHub
     did not resolve one), for
-    ``sova.dashboard.services.work_verdict.parse_review_history()`` to scan for
+    ``sova.work.verdict.parse_review_history()`` to scan for
     SOVA markers. Fetched in the same GraphQL call as the thread/bot-CR fields
     above so a SOVA verdict costs no extra API round trip. The author is
     required because a SOVA marker is otherwise forgeable by any reviewer who

@@ -162,7 +162,7 @@ class MergeQueueMonitor:
 
     async def _handle_merged(self, entry: dict) -> None:
         """PR merged: run post-merge cleanup and update entry."""
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         pr_number = entry["pr_number"]
         repo = entry["repo"]
@@ -212,7 +212,7 @@ class MergeQueueMonitor:
 
     async def _handle_ejected(self, entry: dict, state: str) -> None:
         """PR ejected from queue: update entry, notify."""
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         pr_number = entry["pr_number"]
         repo = entry["repo"]
@@ -238,7 +238,7 @@ class MergeQueueMonitor:
 
     async def _handle_timeout(self, entry: dict) -> None:
         """Queue timeout: update entry, notify."""
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         pr_number = entry["pr_number"]
         repo = entry["repo"]

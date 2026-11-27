@@ -34,7 +34,7 @@
 <button type="{{ type }}" class="sova-btn sova-btn-{{ variant_name }}{% if size in ["xs", "md", "icon"] %} sova-btn-{{ size }}{% endif %}{% if extra_class %} {{ extra_class }}{% endif %}"{% if id %} id="{{ id }}"{% endif %}{% if tooltip %} data-tooltip="{{ tooltip }}"{% endif %}{% if disabled %} disabled{% endif %}{% for name, value in attrs.items() if name not in ["class", "type"] %} {{ name }}="{{ value }}"{% endfor %}>{{ label }}</button>
 {%- endmacro -%}
 
-{#- color: a state color token (work_state.state_color()); the table equals STATE_BADGE_CLASSES in app.js and its token set equals the one work_state.py emits (tests/test_dashboard_component_vocabulary.py checks both), and anything else renders as gray. cls adds extra classes; a "class" key in attrs is merged into it. -#}
+{#- color: a state color token (sova.work.state.state_color()); the table equals STATE_BADGE_CLASSES in app.js and its token set equals the one sova/work/state.py emits (tests/test_dashboard_component_vocabulary.py checks both), and anything else renders as gray. cls adds extra classes; a "class" key in attrs is merged into it. -#}
 {%- macro badge(label, color="gray", attrs={}, cls="") -%}
 {%- set extra_class = ((cls ~ " " ~ attrs.get("class", "")) | trim) -%}
 {%- set color_classes = {

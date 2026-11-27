@@ -60,7 +60,7 @@ sova/awareness/                          # New package
     gmail.py                             # GmailProvider (Google Gmail API)
     gcal.py                              # CalendarProvider (Google Calendar API)
     reminders.py                         # RemindersProvider (Apple Reminders via osascript)
-    pr_status.py                         # PRStatusProvider (reuses existing gh CLI + pr_service)
+    pr_status.py                         # PRStatusProvider (reuses existing gh CLI + sova.work.pr_state)
     agent_runs.py                        # AgentRunProvider (reads SOVA DB)
   auth/
     __init__.py
@@ -216,7 +216,7 @@ The OAuth token at `google-workspace-mcp/.config/google_token.pickle` already in
 - `NEEDS_ATTENTION`: SOVA-created PRs ready for human merge
 - `INFORMATIONAL`: user's PRs with passing CI, recently merged PRs
 
-**Implementation**: This provider is cross-project. It should iterate all registered SOVA projects (`~/.config/sova/projects.json`), not just the current project. Reuse `sova/dashboard/services/pr_service.py` patterns.
+**Implementation**: This provider is cross-project. It should iterate all registered SOVA projects (`~/.config/sova/projects.json`), not just the current project. Reuse `sova/work/pr_state.py` patterns.
 
 ### 5.5 AgentRunProvider
 

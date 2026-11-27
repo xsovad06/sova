@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sova.config.models import NotificationConfig, PRMonitorConfig
-from sova.dashboard.services.pr_service import ComputedPRState
 from sova.supervisor.pr_monitor import PRMonitor, PRSnapshot, _is_coderabbit_rate_limited
 from sova.utils.shell import ShellResult
+from sova.work.pr_state import ComputedPRState
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +81,7 @@ class TestFirstCycleSuppression:
 
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -107,7 +107,7 @@ class TestFirstCycleSuppression:
 
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 side_effect=[prs_initial, prs_changed],
             ),
@@ -157,7 +157,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, ComputedPRState.APPROVED)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -186,7 +186,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, ComputedPRState.SOVA_CHANGES)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -214,7 +214,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, ComputedPRState.CI_FAILED)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -242,7 +242,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, ComputedPRState.APPROVED_CI_GREEN)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -263,9 +263,9 @@ class TestStateTransitionNotifications:
     async def test_ci_less_approved_pr_fires_ready_to_merge_not_approval(self, tmp_path: Path) -> None:
         """An approved, mergeable PR with no CI configured (ci_status="none") computes to
         APPROVED_CI_GREEN (see TestComputePrState.test_approved_with_no_ci_is_green in
-        test_pr_service.py), which must fire notify_on_ready_to_merge, not notify_on_approval.
+        test_pr_state.py), which must fire notify_on_ready_to_merge, not notify_on_approval.
         """
-        from sova.dashboard.services.pr_service import compute_pr_state
+        from sova.work.pr_state import compute_pr_state
 
         computed_state = compute_pr_state(
             is_draft=False,
@@ -285,7 +285,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, computed_state)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -308,7 +308,7 @@ class TestStateTransitionNotifications:
         }
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -330,7 +330,7 @@ class TestStateTransitionNotifications:
         branch protection awaiting a required review) must compute to APPROVED, not
         APPROVED_CI_GREEN, so it never fires notify_on_ready_to_merge while GitHub itself
         still blocks the merge (CodeRabbit, PR #1114)."""
-        from sova.dashboard.services.pr_service import compute_pr_state
+        from sova.work.pr_state import compute_pr_state
 
         computed_state = compute_pr_state(
             is_draft=False,
@@ -350,7 +350,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, computed_state)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -376,7 +376,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, ComputedPRState.APPROVED)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -402,7 +402,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, ComputedPRState.APPROVED)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -439,7 +439,7 @@ class TestStateTransitionNotifications:
         prs = [_make_pr(1, new_state)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -477,7 +477,7 @@ class TestCodeRabbitAutoRetry:
         prs = [_make_pr(1, ComputedPRState.AWAITING_REVIEW)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -508,7 +508,7 @@ class TestCodeRabbitAutoRetry:
         prs = [_make_pr(1, ComputedPRState.AWAITING_REVIEW)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -540,7 +540,7 @@ class TestCodeRabbitAutoRetry:
         prs = [_make_pr(1, ComputedPRState.AWAITING_REVIEW)]
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -771,7 +771,7 @@ class TestExceptionIsolation:
 
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -813,7 +813,7 @@ class TestExceptionIsolation:
 
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -843,7 +843,7 @@ class TestEmptyPRList:
 
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=[],
             ),
@@ -873,7 +873,7 @@ class TestNewPRDetection:
 
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=prs,
             ),
@@ -1024,7 +1024,7 @@ class TestPRMonitorRateLimitGate:
         monitor = _make_monitor(tmp_path)
 
         with patch(
-            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            "sova.work.pr_state.list_open_prs_with_state",
             new_callable=AsyncMock,
         ) as mock_list:
             await monitor._poll_cycle()
@@ -1038,7 +1038,7 @@ class TestPRMonitorRateLimitGate:
 
         with (
             patch(
-                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                "sova.work.pr_state.list_open_prs_with_state",
                 new_callable=AsyncMock,
                 return_value=[],
             ) as mock_list,

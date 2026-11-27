@@ -3117,8 +3117,8 @@ class TestPushStepExecute:
 
     async def test_execute_force_with_lease_when_diverged(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
-        from sova.dashboard.services.feed_service import FeedEventSeverity
         from sova.git.branch import DivergenceCheck, DivergenceStatus
+        from sova.work.feed import FeedEventSeverity
 
         ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
@@ -3135,7 +3135,7 @@ class TestPushStepExecute:
                 new_callable=AsyncMock,
                 return_value=["deadbee dropped commit"],
             ),
-            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True) as mock_emit,
+            patch("sova.work.feed.emit_safe", autospec=True) as mock_emit,
         ):
             result = await step.execute(ctx)
 
@@ -3156,8 +3156,8 @@ class TestPushStepExecute:
 
     async def test_execute_emits_info_when_force_push_drops_nothing(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
-        from sova.dashboard.services.feed_service import FeedEventSeverity
         from sova.git.branch import DivergenceCheck, DivergenceStatus
+        from sova.work.feed import FeedEventSeverity
 
         ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
@@ -3174,7 +3174,7 @@ class TestPushStepExecute:
                 new_callable=AsyncMock,
                 return_value=[],
             ),
-            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True) as mock_emit,
+            patch("sova.work.feed.emit_safe", autospec=True) as mock_emit,
         ):
             await step.execute(ctx)
 
@@ -3281,7 +3281,7 @@ class TestPushStepExecute:
                 new_callable=AsyncMock,
                 return_value=[],
             ),
-            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True),
+            patch("sova.work.feed.emit_safe", autospec=True),
         ):
             mock_push.side_effect = [RuntimeError("! [rejected] (stale info)"), None]
             result = await step.execute(ctx)
@@ -3321,7 +3321,7 @@ class TestPushStepExecute:
                 "sova.core.steps.push.git_ops.list_dropped_commits",
                 new_callable=AsyncMock,
             ) as mock_dropped,
-            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True) as mock_emit,
+            patch("sova.work.feed.emit_safe", autospec=True) as mock_emit,
         ):
             mock_push.side_effect = [RuntimeError("! [rejected] (stale info)"), None]
             result = await step.execute(ctx)
@@ -3381,7 +3381,7 @@ class TestPushStepExecute:
                 new_callable=AsyncMock,
                 return_value=[],
             ),
-            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True),
+            patch("sova.work.feed.emit_safe", autospec=True),
         ):
             mock_push.side_effect = RuntimeError("! [rejected] (stale info)")
             result = await step.execute(ctx)

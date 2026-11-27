@@ -27,8 +27,8 @@ from httpx import ASGITransport, AsyncClient
 from sova.adapters.base import Task, TaskState
 from sova.adapters.priority import Priority
 from sova.dashboard.services import action_registry, work_board_service
-from sova.dashboard.services.work_state import WorkItemState, WorkStage, stage_color, stage_label
 from sova.supervisor.dependency_graph import DependencyGraph
+from sova.work.state import WorkItemState, WorkStage, stage_color, stage_label
 from tests.conftest import DASHBOARD_DIR, csrf_request_headers
 
 _STATIC = DASHBOARD_DIR / "static"
@@ -1813,7 +1813,7 @@ def _run_node(tmp_path: Path, scenario: str, env: dict[str, str] | None = None) 
 
 def _pr_state_env() -> dict[str, str]:
     """The server's PR state keys, for a scenario that must not hard-code them."""
-    from sova.dashboard.services.pr_service import ComputedPRState
+    from sova.work.pr_state import ComputedPRState
 
     return {"STATE_CONFLICTED": ComputedPRState.CONFLICTED.value, "STATE_DRAFT": ComputedPRState.DRAFT.value}
 
@@ -2098,8 +2098,8 @@ class TestDrawerOverlaysTheBoard:
         assert ">Conflicts<" in out["flagsBesideDraftState"]
 
     def test_the_server_emits_the_state_key_the_duplicate_is_matched_on(self) -> None:
-        from sova.dashboard.services.pr_service import ComputedPRState
         from sova.dashboard.services.work_board_service import _pr_summary
+        from sova.work.pr_state import ComputedPRState
 
         for state in (ComputedPRState.CONFLICTED, ComputedPRState.DRAFT):
             summary = _pr_summary({"pr_details": {"number": 3, "computed_state": state.value, "state_label": "x"}})

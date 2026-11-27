@@ -32,7 +32,6 @@ from sova.dashboard.services.agent_validation import (
     STATE_NOT_READY,
     suitability_blocked_detail,
 )
-from sova.dashboard.services.feed_service import get_feed_service
 from sova.dashboard.services.output_stream_service import get_output_stream_service
 from sova.dashboard.services.snapshot_service import (
     get_snapshot,
@@ -52,6 +51,7 @@ from sova.db.session import get_session
 from sova.llm.backends import TIER_NAMES
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
+from sova.work.feed import get_feed_service
 
 router = APIRouter(tags=["agents"])
 # require_same_origin_csrf (applied to `router` at include_router() time in app.py)

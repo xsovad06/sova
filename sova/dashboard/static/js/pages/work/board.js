@@ -8,7 +8,7 @@ import { clearSelection, getSelected, onSelectionChange, relationChip, relationC
 // label and color token and the payload key holding its entries. A stage whose `column` names another stage
 // is a collapsed group inside that column ("Your own work" in Needs you); one with no column (blocked) shows
 // only in the chains. The page keeps no stage table of its own: which stage an issue is in, what a stage is
-// called, its color and where it shows all come from the server (work_state.py, work_board_service.py).
+// called, its color and where it shows all come from the server (work/state.py, work_board_service.py).
 //
 // Refreshes come from the shared socket only (#1459): work_items_changed, agent_finished and
 // graph_invalidated reload the board, a handoff whose content changed reloads it (the first one after a socket
@@ -278,7 +278,7 @@ function _priorityIcon(entry, stage) {
     '<img src="' + priorityIconUrl(entry.priority) + '" alt="' + escapeHtml(name) + '" width="16" height="16"></span>';
 }
 
-// The issue's state as the server names and colors it (work_state.py), as a pill.
+// The issue's state as the server names and colors it (work/state.py), as a pill.
 export function statePill(entry) {
   if (!entry.state_label) return '';
   return '<span class="px-1.5 rounded-full text-xs whitespace-nowrap ' + stateBadgeClasses(entry.state_color) + '">' +
@@ -443,7 +443,7 @@ function _localTime(iso) {
   return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-// The role the issue's stage runs next (its `start` action, from work_state.start_action() on the server):
+// The role the issue's stage runs next (its `start` action, from sova.work.state.start_action() on the server):
 // researcher on a triaged issue, developer on a researched one; '' when no agent runs on it in its state.
 function _startRole(entry) {
   return (entry.start && entry.start.handler_args && entry.start.handler_args.role) || '';

@@ -1222,8 +1222,8 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.ipc.notifications.notify"),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
-            patch("sova.dashboard.services.work_verdict.invalidate_verdict") as invalidate_verdict,
+            patch("sova.work.pr_state.invalidate_pr_cache") as invalidate_prs,
+            patch("sova.work.verdict.invalidate_verdict") as invalidate_verdict,
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -1246,8 +1246,8 @@ class TestWaitAndFinalizeGraphBroadcast:
         with (
             patch("sova.dashboard.services.agent_finalize.load_config", side_effect=RuntimeError("bad config")),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache", side_effect=OSError("boom")),
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
-            patch("sova.dashboard.services.work_verdict.invalidate_verdict") as invalidate_verdict,
+            patch("sova.work.pr_state.invalidate_pr_cache") as invalidate_prs,
+            patch("sova.work.verdict.invalidate_verdict") as invalidate_verdict,
         ):
             agent_finalize.invalidate_work_item_caches(tmp_path, 99)
 
@@ -1262,7 +1262,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         with (
             patch("sova.dashboard.services.agent_finalize.load_config", side_effect=RuntimeError("bad config")),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
+            patch("sova.work.pr_state.invalidate_pr_cache") as invalidate_prs,
         ):
             agent_finalize.invalidate_work_item_caches(tmp_path)
 
@@ -1280,7 +1280,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         with (
             patch("sova.dashboard.services.agent_finalize.load_config", return_value=cfg),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache", side_effect=OSError("stale symlink")),
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
+            patch("sova.work.pr_state.invalidate_pr_cache") as invalidate_prs,
         ):
             agent_finalize.invalidate_work_item_caches(tmp_path)
 
@@ -1297,7 +1297,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         with (
             patch("sova.dashboard.services.agent_finalize.load_config", return_value=cfg),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
+            patch("sova.work.pr_state.invalidate_pr_cache") as invalidate_prs,
         ):
             agent_finalize.invalidate_work_item_caches(tmp_path)
 
@@ -1315,7 +1315,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             capture_logs() as logs,
             patch("sova.dashboard.services.agent_finalize.load_config", side_effect=RuntimeError("bad config")),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
-            patch("sova.dashboard.services.work_verdict.invalidate_verdict", side_effect=OSError("boom")),
+            patch("sova.work.verdict.invalidate_verdict", side_effect=OSError("boom")),
         ):
             agent_finalize.invalidate_work_item_caches(tmp_path, 99)
 

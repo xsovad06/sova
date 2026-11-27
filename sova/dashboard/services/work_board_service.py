@@ -2,7 +2,7 @@
 
 ``build_board()`` composes the work items (``get_work_items()``), the "Up next" ranking
 (``load_ranking_graph()`` + ``rank_graph_entries()``), the supervisor queue, the active runs and the
-dependency graph. The stage of each issue comes from ``work_state.work_stage()``, the one place the stage
+dependency graph. The stage of each issue comes from ``sova.work.state.work_stage()``, the one place the stage
 rule lives, so the client keeps no stage table. The board reads and prunes; it never adds a queue entry.
 """
 
@@ -38,7 +38,14 @@ from sova.dashboard.services.work_item_service import (
     normalize_work_items_for_digest,
     rank_graph_entries,
 )
-from sova.dashboard.services.work_state import (
+from sova.db.session import get_session
+from sova.git.pr import list_merged_prs_since
+from sova.supervisor.dependency_graph import GRAPH_CACHE_TTL
+from sova.supervisor.labels import is_epic
+from sova.supervisor.queue_maintenance import prune_closed
+from sova.supervisor.suitability import assess_suitability, unblock_count, unsatisfied_dependencies
+from sova.utils.logging import get_logger
+from sova.work.state import (
     YOURS_MODES,
     WorkItemState,
     WorkStage,
@@ -49,13 +56,6 @@ from sova.dashboard.services.work_state import (
     state_label,
     work_stage,
 )
-from sova.db.session import get_session
-from sova.git.pr import list_merged_prs_since
-from sova.supervisor.dependency_graph import GRAPH_CACHE_TTL
-from sova.supervisor.labels import is_epic
-from sova.supervisor.queue_maintenance import prune_closed
-from sova.supervisor.suitability import assess_suitability, unblock_count, unsatisfied_dependencies
-from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from sova.supervisor.dependency_graph import DependencyGraph
@@ -369,7 +369,8 @@ _ACTION_KEYS = ("id", "label", "style", "handler", "handler_args", "merge_blocke
 
 
 def _item_actions(item: dict) -> list[dict]:
-    """The work item's own actions for its state (work_state._get_actions), primary first, as the drawer lists them.
+    """The work item's own actions for its state (sova.work.state.get_actions), primary first, as the drawer lists
+    them.
 
     Each keeps ``id, label, style, handler, handler_args`` and, on an Integrate action, ``merge_blockers`` (the
     unmet merge conditions the page confirms before running it).
@@ -571,7 +572,7 @@ async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | N
     new day. The merged list is cached for ``_MERGED_CACHE_TTL`` seconds, so a failure is never cached as an
     empty day.
     """
-    from sova.dashboard.services.pr_service import closing_references, extract_all_linked_issues, extract_jira_key
+    from sova.work.pr_state import closing_references, extract_all_linked_issues, extract_jira_key
 
     midnight = _local_midnight(now)
     since_day = midnight.astimezone(timezone.utc).date()

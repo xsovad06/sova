@@ -276,7 +276,7 @@ async def resolve_sova_verdict(
     """Resolve a PR's SOVA review verdict from its GitHub review history.
 
     Thin adapter over parse_review_history(): both the dashboard
-    (_fetch_sova_verdicts) and the supervisor (_refine_in_review_action) call
+    (fetch_sova_verdicts) and the supervisor (_refine_in_review_action) call
     it so the same PR cannot yield two different verdict dicts, and therefore
     cannot resolve to two different next actions via resolve_next_action().
 
@@ -386,7 +386,7 @@ async def _prewarm_verdict_cache(pr_numbers: list[int], *, project_dir: Path | N
         _cache_put(project_dir, pr_number, verdict)
 
 
-async def _fetch_sova_verdicts(
+async def fetch_sova_verdicts(
     prs_by_issue: dict[str, dict],
     unlinked_prs: list[dict] | None = None,
     project_dir: Path | None = None,

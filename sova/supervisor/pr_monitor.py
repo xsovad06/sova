@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING
 
 from sova.config.loader import load_config
 from sova.config.models import PRMonitorConfig
-from sova.dashboard.services.pr_service import ComputedPRState
-from sova.dashboard.services.work_state import state_label
 from sova.utils.logging import get_logger
+from sova.work.pr_state import ComputedPRState
+from sova.work.state import state_label
 
 if TYPE_CHECKING:
     from sova.config.models import NotificationConfig
@@ -125,21 +125,21 @@ class PRMonitor:
     async def _poll_cycle(self) -> None:
         """Single poll cycle: fetch PRs, detect transitions, act."""
         from sova.config.context import clear_project_context, set_project_context
-        from sova.dashboard.services.pr_service import list_open_prs_with_state
         from sova.supervisor.github_quota import get_github_quota_tracker
+        from sova.work.pr_state import list_open_prs_with_state
 
         tracker = get_github_quota_tracker(self.github_user)
         if tracker.should_skip():
             log.info("pr_monitor.skipped_rate_limited")
             return
 
-        # list_open_prs_with_state() uses get_project_dir() from a ContextVar
-        # that is normally set by request middleware.  Background tasks have no
-        # request, so we set it explicitly.
+        # Background tasks have no request middleware to set the project
+        # ContextVar, so set it for anything below that reads it, and pass the
+        # project to list_open_prs_with_state() explicitly.
         slug = self.repo.replace("/", "-")
         set_project_context(self.project_dir, slug)
         try:
-            prs = await list_open_prs_with_state()
+            prs = await list_open_prs_with_state(self.project_dir)
         finally:
             clear_project_context()
         current: dict[int, PRSnapshot] = {}

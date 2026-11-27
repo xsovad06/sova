@@ -20,18 +20,18 @@ from httpx import ASGITransport, AsyncClient
 
 from sova.dashboard.services import (
     agent_finalize,
-    pr_service,
     queue_service,
     snapshot_service,
     work_board_service,
     work_item_service,
     work_refresh_service,
-    work_verdict,
 )
 from sova.dashboard.services.work_refresh_service import RunMark, board_transitions
 from sova.git.conditional import ConditionalProbe, ProbeOutcome
 from sova.git.pr import PRLookupError
 from sova.utils.shell import ShellResult
+from sova.work import pr_state
+from sova.work import verdict as work_verdict
 from tests.conftest import csrf_request_headers
 
 
@@ -48,9 +48,9 @@ def _reset_module_state() -> None:
     snapshot_service.reset_snapshots()
     work_item_service.reset_graph_load_state()
     agent_finalize._finalized_runs.clear()
-    pr_service._pr_cache.clear()
-    pr_service._pr_fetch_failed_until.clear()
-    pr_service._pr_inflight.clear()
+    pr_state._pr_cache.clear()
+    pr_state._pr_fetch_failed_until.clear()
+    pr_state._pr_inflight.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -275,12 +275,12 @@ def pr_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespa
         github_user="alice",
         task_source=SimpleNamespace(type="github", jira_project_key=""),
     )
-    monkeypatch.setattr(pr_service, "load_config", lambda _p: cfg)
+    monkeypatch.setattr(pr_state, "load_config", lambda _p: cfg)
     monkeypatch.setattr(work_item_service, "load_config", lambda _p: cfg)
     monkeypatch.setattr("sova.git.pr.get_pr_review_data", AsyncMock(return_value={}))
-    monkeypatch.setattr(pr_service, "_enrich_pr", lambda pr, now: {**pr, "computed_state": "test"})
-    monkeypatch.setattr(pr_service, "_record_state_transitions", AsyncMock())
-    monkeypatch.setattr(pr_service, "get_active_gh_user", AsyncMock(return_value="alice"))
+    monkeypatch.setattr(pr_state, "_enrich_pr", lambda pr, now: {**pr, "computed_state": "test"})
+    monkeypatch.setattr(pr_state, "_record_state_transitions", AsyncMock())
+    monkeypatch.setattr(pr_state, "get_active_gh_user", AsyncMock(return_value="alice"))
     monkeypatch.setattr(
         "sova.dashboard.services.agent_lifecycle.get_unified_agents",
         AsyncMock(return_value={"agents": [], "completed": []}),
@@ -322,14 +322,14 @@ class TestSharedOpenPrFetch:
         monkeypatch.setattr("sova.git.pr.list_open_prs", listed)
 
         results = await asyncio.gather(
-            *(pr_service.list_open_prs_with_state(pr_sources.project, raise_on_error=True) for _ in range(3)),
+            *(pr_state.list_open_prs_with_state(pr_sources.project, raise_on_error=True) for _ in range(3)),
             return_exceptions=True,
         )
-        quiet = await pr_service.list_open_prs_with_state(pr_sources.project)
+        quiet = await pr_state.list_open_prs_with_state(pr_sources.project)
 
         assert [type(r) for r in results] == [PRLookupError] * 3
         assert listed.await_count == 1
-        assert pr_service._pr_cache == {}
+        assert pr_state._pr_cache == {}
         assert quiet == []
 
 
@@ -365,7 +365,7 @@ class TestBoardTransitions:
 
     async def test_a_transition_invalidates_the_pr_queue_verdict_and_merged_caches(self, tmp_path: Path) -> None:
         project = tmp_path.resolve()
-        pr_service._pr_cache[("owner/repo", "alice")] = (time.monotonic(), [])
+        pr_state._pr_cache[("owner/repo", "alice")] = (time.monotonic(), [])
         queue_service._queue_cache[str(project)] = (time.monotonic(), [])
         work_verdict._sova_verdict_cache[work_verdict._cache_key(project, 10)] = (time.monotonic(), {})
         work_board_service._merged_cache[(f"{project}:owner/repo", date.today())] = (time.monotonic(), [])
@@ -377,7 +377,7 @@ class TestBoardTransitions:
         finally:
             work_verdict.clear_verdict_cache()
 
-        assert pr_service._pr_cache == {}
+        assert pr_state._pr_cache == {}
         assert str(project) not in queue_service._queue_cache
         assert work_board_service._merged_cache == {}
 
@@ -1270,9 +1270,10 @@ class TestColdBoardBuild:
 
         project = pr_sources.project
         cfg = ProjectConfig(github_repo="owner/repo", github_user="alice")
-        for module in ("agent_pool", "pr_service", "queue_service", "work_board_service", "work_item_service"):
+        for module in ("agent_pool", "queue_service", "work_board_service", "work_item_service"):
             monkeypatch.setattr(f"sova.dashboard.services.{module}.load_config", lambda *_a, **_k: cfg)
-        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", lambda *_a, **_k: cfg)
+        monkeypatch.setattr("sova.work.pr_state.load_config", lambda *_a, **_k: cfg)
+        monkeypatch.setattr("sova.work.verdict.load_config", lambda *_a, **_k: cfg)
         monkeypatch.setattr("sova.git.pr.run", run)
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
         monkeypatch.setattr(work_board_service, "load_ranking_graph", AsyncMock(return_value=DependencyGraph([])))
@@ -1564,11 +1565,11 @@ class TestPrProbeDropsOnlyMovedVerdicts:
 
 class TestPrFailurePauseLiftsOnInvalidation:
     def test_an_invalidation_lifts_the_failure_pause(self) -> None:
-        pr_service._pr_fetch_failed_until[("owner/repo", "alice")] = time.monotonic() + 30
+        pr_state._pr_fetch_failed_until[("owner/repo", "alice")] = time.monotonic() + 30
 
-        pr_service.invalidate_pr_cache("owner/repo")
+        pr_state.invalidate_pr_cache("owner/repo")
 
-        assert ("owner/repo", "alice") not in pr_service._pr_fetch_failed_until
+        assert ("owner/repo", "alice") not in pr_state._pr_fetch_failed_until
 
 
 class TestSeveralResponseHeads:

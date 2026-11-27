@@ -1,4 +1,4 @@
-"""Tests for sova.dashboard.services.feed_service and feed router."""
+"""Tests for sova.work.feed and feed router."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from structlog.testing import capture_logs
 
-from sova.dashboard.services.feed_service import (
+from sova.dashboard.services.feed_service import history_page, prune_old_events, to_sse
+from sova.work.feed import (
     FeedEvent,
     FeedEventSeverity,
     FeedService,
@@ -112,7 +113,7 @@ class TestFeedService:
     def test_to_sse_format(self) -> None:
         svc = FeedService()
         event = svc.emit("Test")
-        sse = svc.to_sse(event)
+        sse = to_sse(event)
         assert sse.startswith(f"id: {event.id}\n")
         assert "event: feed\n" in sse
         assert "data: " in sse
@@ -134,7 +135,7 @@ class TestFeedService:
 
 class TestGetFeedService:
     def test_returns_singleton(self) -> None:
-        import sova.dashboard.services.feed_service as mod
+        import sova.work.feed as mod
 
         mod._feed_service = None
         s1 = get_feed_service()
@@ -154,7 +155,7 @@ pytestmark = pytest.mark.usefixtures("reset_db_rows")
 @pytest.fixture
 async def feed_service():
     """Provide a fresh FeedService for each test."""
-    import sova.dashboard.services.feed_service as mod
+    import sova.work.feed as mod
 
     svc = FeedService()
     mod._feed_service = svc
@@ -186,6 +187,19 @@ async def test_feed_history_empty(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_event_emitted_outside_the_dashboard_reaches_its_history(
+    client: AsyncClient, feed_service: FeedService
+) -> None:
+    """Pipeline steps and the supervisor emit through sova.work.feed; the dashboard reads the same singleton."""
+    emit_safe("Pushed branch", category="agent")
+    await feed_service.drain_persist()
+    buffered = (await client.get("/api/feed/history")).json()["events"]
+    persisted = (await client.get("/api/feed/history", params={"before_id": 10_000})).json()["events"]
+    assert [e["title"] for e in buffered] == ["Pushed branch"]
+    assert [e["title"] for e in persisted] == ["Pushed branch"]
+
+
+@pytest.mark.asyncio
 async def test_feed_history_returns_events(client: AsyncClient, feed_service: FeedService) -> None:
     feed_service.emit("Event A")
     feed_service.emit("Event B")
@@ -213,7 +227,7 @@ def test_feed_service_to_sse_includes_all_fields() -> None:
     """Verify SSE formatting includes id, event, and data lines."""
     svc = FeedService()
     event = svc.emit("SSE test", severity=FeedEventSeverity.warning, category="agent")
-    sse = svc.to_sse(event)
+    sse = to_sse(event)
     lines = sse.strip().split("\n")
     assert lines[0] == f"id: {event.id}"
     assert lines[1] == "event: feed"
@@ -225,7 +239,7 @@ def test_feed_service_to_sse_includes_all_fields() -> None:
 
 class TestEmitSafe:
     def test_emit_safe_succeeds(self) -> None:
-        import sova.dashboard.services.feed_service as mod
+        import sova.work.feed as mod
 
         svc = FeedService()
         mod._feed_service = svc
@@ -235,7 +249,7 @@ class TestEmitSafe:
 
     def test_emit_safe_swallows_exception(self) -> None:
         """emit_safe should not raise even when get_feed_service().emit raises."""
-        with patch("sova.dashboard.services.feed_service.get_feed_service", side_effect=RuntimeError("boom")):
+        with patch("sova.work.feed.get_feed_service", side_effect=RuntimeError("boom")):
             with capture_logs() as logs:
                 emit_safe("will fail")
 
@@ -268,7 +282,7 @@ class TestFeedPersistence:
         feed_service.emit("Persisted event", category="agent", metadata={"run_id": 7})
         # The DB write is scheduled as a background task; let it run.
         await feed_service.drain_persist()
-        events, has_more = await feed_service.history_page(limit=50)
+        events, has_more = await history_page(limit=50)
         assert has_more is False
         assert len(events) == 1
         assert events[0]["title"] == "Persisted event"
@@ -282,7 +296,7 @@ class TestFeedPersistence:
 
         with (
             patch(
-                "sova.dashboard.services.feed_service.get_session",
+                "sova.work.feed.get_session",
                 side_effect=OperationalError("stmt", {}, Exception("locked")),
             ),
             capture_logs() as logs,
@@ -299,7 +313,7 @@ class TestFeedPersistence:
         for i in range(5):
             feed_service.emit(f"Event {i}")
             await feed_service.drain_persist()
-        events, _ = await feed_service.history_page(limit=50)
+        events, _ = await history_page(limit=50)
         titles = [e["title"] for e in events]
         assert titles == ["Event 0", "Event 1", "Event 2", "Event 3", "Event 4"]
 
@@ -309,15 +323,15 @@ class TestFeedPersistence:
             feed_service.emit(f"Event {i}")
             await feed_service.drain_persist()
         # First page: newest 2.
-        page1, has_more1 = await feed_service.history_page(limit=2)
+        page1, has_more1 = await history_page(limit=2)
         assert has_more1 is True
         assert [e["title"] for e in page1] == ["Event 3", "Event 4"]
         # Older page using the oldest id of page1 as the cursor.
         cursor = page1[0]["id"]
-        page2, has_more2 = await feed_service.history_page(before_id=cursor, limit=2)
+        page2, has_more2 = await history_page(before_id=cursor, limit=2)
         assert [e["title"] for e in page2] == ["Event 1", "Event 2"]
         assert has_more2 is True
-        page3, has_more3 = await feed_service.history_page(before_id=page2[0]["id"], limit=2)
+        page3, has_more3 = await history_page(before_id=page2[0]["id"], limit=2)
         assert [e["title"] for e in page3] == ["Event 0"]
         assert has_more3 is False
 
@@ -336,7 +350,7 @@ class TestFeedPersistence:
         event = feed_service.emit("after restart")
         assert event.id > 500
         await feed_service.drain_persist()
-        events, _ = await feed_service.history_page(limit=50)
+        events, _ = await history_page(limit=50)
         # Both the seeded row and the new event are present, ordered by id.
         titles = [e["title"] for e in events]
         assert titles == ["old", "after restart"]
@@ -378,9 +392,9 @@ class TestFeedPersistence:
             )
             await session.commit()
 
-        deleted = await feed_service.prune_old_events(retention_days=30)
+        deleted = await prune_old_events(retention_days=30)
         assert deleted == 1
-        events, _ = await feed_service.history_page(limit=50)
+        events, _ = await history_page(limit=50)
         assert [e["title"] for e in events] == ["fresh"]
 
 
@@ -411,7 +425,7 @@ async def test_feed_briefing_empty_when_disabled(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_feed_history_gap_fill_backfills_from_db(client: AsyncClient, feed_service: FeedService) -> None:
     """When the buffer has dropped events, gap-fill paginates through DB."""
-    import sova.dashboard.services.feed_service as mod
+    import sova.work.feed as mod
 
     old_size = mod._BUFFER_SIZE
     mod._BUFFER_SIZE = 3
@@ -446,7 +460,7 @@ async def test_feed_history_no_gap_when_buffer_empty(client: AsyncClient, feed_s
 @pytest.mark.asyncio
 async def test_feed_history_gap_multi_page_backfill(client: AsyncClient, feed_service: FeedService) -> None:
     """Gap-fill paginates through multiple DB pages to recover all events."""
-    import sova.dashboard.services.feed_service as mod
+    import sova.work.feed as mod
 
     old_size = mod._BUFFER_SIZE
     mod._BUFFER_SIZE = 2
@@ -472,7 +486,7 @@ async def test_feed_drain_persist(feed_service: FeedService) -> None:
     """drain_persist awaits all in-flight persistence tasks."""
     feed_service.emit("Drain test")
     await feed_service.drain_persist()
-    events, _ = await feed_service.history_page(limit=50)
+    events, _ = await history_page(limit=50)
     assert len(events) == 1
     assert events[0]["title"] == "Drain test"
 
@@ -688,7 +702,7 @@ def test_serialize_item_without_recurring_fields() -> None:
 
 class TestEmitFinalizeEvent:
     def test_emit_finalize_event_success(self) -> None:
-        import sova.dashboard.services.feed_service as mod
+        import sova.work.feed as mod
         from sova.dashboard.services.agent_db import _emit_finalize_event
         from sova.dashboard.services.agent_pool import AgentState
 
@@ -710,7 +724,7 @@ class TestEmitFinalizeEvent:
         mod._feed_service = None
 
     def test_emit_finalize_event_failure(self) -> None:
-        import sova.dashboard.services.feed_service as mod
+        import sova.work.feed as mod
         from sova.dashboard.services.agent_db import _emit_finalize_event
         from sova.dashboard.services.agent_pool import AgentState
 

@@ -205,11 +205,11 @@ async def _pr_verdict(*, pr: int, project_dir: Path | None) -> str:
 
 
 async def _read_pr_verdict(*, pr: int, project_dir: Path | None) -> str:
-    from sova.dashboard.services.pr_service import resolve_head_verdict
     from sova.git.pr import get_pr_head_sha, get_pr_review_data
     from sova.git.worktree import get_primary_worktree_root
     from sova.ipc.handoff import read_all_handoff_files
     from sova.utils.gh import get_active_gh_user
+    from sova.work.pr_state import resolve_head_verdict
 
     # A linked worktree has no sova.db and its handoff files live in the primary checkout.
     root = project_dir or await get_primary_worktree_root()

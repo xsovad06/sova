@@ -25,11 +25,11 @@ from sqlalchemy.orm import defer
 
 from sova.config.models import MemoryGuardConfig, WatchdogConfig
 from sova.core.state import TASK_RUN_TERMINAL
-from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.db.models import OutputLine, TaskRun
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
+from sova.work.feed import FeedEventSeverity, emit_safe
 
 try:
     import psutil

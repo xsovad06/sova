@@ -14,14 +14,6 @@ from sova.config.models import ProjectConfig, ReviewPanelConfig
 from sova.core.context import ExecutionContext
 from sova.core.schema_validation import ValidationError
 from sova.core.steps.address_review import _parse_finding_lines
-from sova.dashboard.services.work_state import (
-    PRFacts,
-    WorkItemState,
-    _build_pr_facts,
-    describe_reason_chain,
-    resolve_next_action,
-)
-from sova.dashboard.services.work_verdict import parse_review_history
 from sova.llm.errors import (
     BillingError,
     ConfigurationError,
@@ -55,6 +47,14 @@ from sova.utils.review_markers import (
     SOVA_INCOMPLETE_REVIEW_MARKER,
     parse_verdict_marker,
 )
+from sova.work.state import (
+    PRFacts,
+    WorkItemState,
+    build_pr_facts,
+    describe_reason_chain,
+    resolve_next_action,
+)
+from sova.work.verdict import parse_review_history
 
 TWO_FILE_DIFF = "diff --git a/a.py b/a.py\n" + "+" * DIFF_CHUNK_SIZE + "\ndiff --git a/b.py b/b.py\n" + "+" * 100
 ONE_FILE_DIFF = "diff --git a/a.py b/a.py\n+x"
@@ -728,9 +728,9 @@ class TestIncompleteReviewRouting:
         pr_data = {"state": "OPEN", "head_sha": "abc1234"}
         verdict = {"has_sova_review": True, "verdict": "revise", "review_incomplete": True}
 
-        assert _build_pr_facts(pr_data, verdict, external_reviews_enabled=True).sova_review_incomplete is True
+        assert build_pr_facts(pr_data, verdict, external_reviews_enabled=True).sova_review_incomplete is True
         no_review = {**verdict, "has_sova_review": False}
-        assert _build_pr_facts(pr_data, no_review, external_reviews_enabled=True).sova_review_incomplete is False
+        assert build_pr_facts(pr_data, no_review, external_reviews_enabled=True).sova_review_incomplete is False
 
 
 class TestReviewNextAction:

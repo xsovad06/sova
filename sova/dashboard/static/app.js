@@ -2553,7 +2553,7 @@ function priorityDisplayName(priority) {
    ============================================================ */
 
 /* Each kind of run's name, running form and colour token come from the server's table
-   (work_state.RUN_ACTIONS), emitted once per page as window.SOVA_RUN_ACTIONS. These helpers only
+   (sova.work.state.RUN_ACTIONS), emitted once per page as window.SOVA_RUN_ACTIONS. These helpers only
    normalize a stored role, look it up, and turn a colour token into classes. A page without the
    table (home.html and setup.html do not extend base.html) still shows the command or role name. */
 
@@ -2574,14 +2574,14 @@ function runActionColors(token) {
   };
 }
 
-// command:<name> without a leading slash or arguments, as work_state.command_role() does; other roles unchanged.
+// command:<name> without a leading slash or arguments, as sova.work.state.command_role() does; other roles unchanged.
 function _commandRole(role) {
   if (role.indexOf('command:') !== 0) return role;
   var words = role.slice('command:'.length).trim().split(/\s+/);
   return 'command:' + words[0].replace(/^\/+/, '');
 }
 
-// The action a run performed: {key, label, running, color}. Mirrors work_state.run_action() over the same table.
+// The action a run performed: {key, label, running, color}. Mirrors sova.work.state.run_action() over the same table.
 function runActionFor(role, pipelineVariant) {
   if (!role) return { key: 'auto', label: 'Auto', running: 'Running', color: 'gray' };
   var table = window.SOVA_RUN_ACTIONS;
@@ -2654,7 +2654,7 @@ var STEP_STATUS_COLORS = {
 };
 
 /* State colors. The API decides which token a state gets (state_color, from
-   sova/dashboard/services/work_state.py); these two lookups only turn a token into
+   sova/work/state.py); these two lookups only turn a token into
    badge classes or a hex, so no page keeps its own state-to-color table. */
 var STATE_BADGE_CLASSES = {
   'gray':         'bg-gray-600/30 text-gray-400',

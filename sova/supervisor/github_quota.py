@@ -81,7 +81,7 @@ class GitHubQuotaTracker:
     @staticmethod
     def _emit_hit_event() -> None:
         try:
-            from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+            from sova.work.feed import FeedEventSeverity, emit_safe
 
             emit_safe(
                 "GitHub API rate limit exceeded",
@@ -95,7 +95,7 @@ class GitHubQuotaTracker:
     @staticmethod
     def _emit_recovery_event() -> None:
         try:
-            from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+            from sova.work.feed import FeedEventSeverity, emit_safe
 
             emit_safe(
                 "GitHub API rate limit recovered",

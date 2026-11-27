@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from sova.dashboard.services.run_outcome import first_sentence
-from sova.dashboard.services.work_state import HistoryState
+from sova.work.state import HistoryState
 
 # A reason (an error message, a watchdog signal) is cut here so one long traceback line cannot fill a feed line.
 _REASON_MAX = 140

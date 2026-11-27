@@ -231,7 +231,7 @@ async def _check_merge_queue_on_failure(
             branch_name=branch,
         )
 
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         emit_safe(
             f"PR #{agent.pr_number} enqueued in merge queue (monitored)",
@@ -321,7 +321,7 @@ async def _check_merge_queue_marker_file(agent: AgentState, run_id: int | None) 
                 branch_name=branch_name,
             )
 
-            from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+            from sova.work.feed import FeedEventSeverity, emit_safe
 
             emit_safe(
                 f"PR #{pr_number} enqueued in merge queue (monitored)",
@@ -475,7 +475,7 @@ def invalidate_work_item_caches(
         log.warning("finalize.queue_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
     if prs:
         try:
-            from sova.dashboard.services.pr_service import invalidate_pr_cache
+            from sova.work.pr_state import invalidate_pr_cache
 
             repo = load_config(project_dir).github_repo
             if repo:
@@ -489,7 +489,7 @@ def invalidate_work_item_caches(
         except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
             log.warning("finalize.merged_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
     try:
-        from sova.dashboard.services.work_verdict import invalidate_project_verdicts, invalidate_verdict
+        from sova.work.verdict import invalidate_project_verdicts, invalidate_verdict
 
         for pr_number in pr_numbers:
             invalidate_verdict(project_dir, pr_number)

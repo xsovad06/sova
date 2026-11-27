@@ -296,7 +296,7 @@ const GRAPH_DIM_OPACITY = 0.6;
 const GRAPH_DIMMED_MODES = new Set(['human', 'epic', 'blocked', 'unclassified']);
 
 // The node badge for the common modes. The renderer and the legend pills both read this table, so the
-// token (a work_state.py color token resolved by stateHex()) lives in one place.
+// token (a work/state.py color token resolved by stateHex()) lives in one place.
 const GRAPH_MODE_BADGES = {
   blocked: { label: 'BLOCKED', token: 'yellow', width: 46 },
   unclassified: { label: 'UNCLASSIFIED', token: 'gray', width: 64 },
@@ -698,7 +698,7 @@ async function loadGraph() {
 }
 
 // The legend is built from the label and color token the API attached to each node on screen, so it
-// lists exactly the colors the graph draws and cannot drift from them (work_state.py owns both).
+// lists exactly the colors the graph draws and cannot drift from them (work/state.py owns both).
 function renderStateLegend(nodes) {
   document.querySelectorAll('[data-mode-badge]').forEach(pill => {
     const hex = stateHex(GRAPH_MODE_BADGES[pill.dataset.modeBadge].token);

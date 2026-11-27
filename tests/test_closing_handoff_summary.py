@@ -13,8 +13,8 @@ from typer.testing import CliRunner
 
 from sova.cli.app import app
 from sova.dashboard.services.run_outcome import run_outcome
-from sova.dashboard.services.work_state import run_action
 from sova.ipc.handoff import ClosingSummaryError, read_handoff_file, record_closing_summary
+from sova.work.state import run_action
 
 COMMANDS = ("address-pr", "integrate-pr")
 ROOT = Path(__file__).resolve().parent.parent

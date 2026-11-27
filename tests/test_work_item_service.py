@@ -27,7 +27,6 @@ from sova.dashboard.services.work_item_service import (
     _format_pr_details,
     _format_running_agent,
     _format_sova_context,
-    _get_actions,
     _graph_key,
     _index_handoffs,
     _index_prs_by_issue,
@@ -35,12 +34,12 @@ from sova.dashboard.services.work_item_service import (
     _jira_project_prs,
     _load_graph_or_none,
     _parse_issue_number,
-    _sort_items,
     board_exclusions,
     cancel_graph_builds,
     compute_work_item_resolution,
     compute_work_item_state,
     describe_reason_chain,
+    get_actions,
     get_next_tasks,
     get_work_items,
     load_dependency_graph,
@@ -49,10 +48,11 @@ from sova.dashboard.services.work_item_service import (
     rank_graph_entries,
     ranked_task_payload,
     resolve_next_action,
+    sort_items,
 )
-from sova.dashboard.services.work_state import WorkStage, work_stage
 from sova.supervisor.dependency_graph import DependencyGraph
 from sova.supervisor.suitability import rank_next_tasks
+from sova.work.state import WorkStage, work_stage
 
 
 @pytest.fixture(autouse=True)
@@ -232,10 +232,10 @@ class TestComputeWorkItemState:
     def test_pr_conflicted(self) -> None:
         """mergeable == CONFLICTING routes to PR_CONFLICTED regardless of computed_state (rule 3).
 
-        _build_pr_facts() reads mergeable directly and ignores computed_state="conflicted"
+        build_pr_facts() reads mergeable directly and ignores computed_state="conflicted"
         for this purpose (see TestResolveNextAction for the full golden table); real PR
         data always sets both consistently since compute_pr_state() derives computed_state
-        from mergeable in the first place (pr_service.py).
+        from mergeable in the first place (sova/work/pr_state.py).
         """
         assert (
             _state(
@@ -495,17 +495,17 @@ class TestComputeWorkItemState:
 
 class TestGetActions:
     def test_backlog_has_triage(self) -> None:
-        primary, _ = _get_actions(WorkItemState.BACKLOG, issue_number="42", pr_number=None)
+        primary, _ = get_actions(WorkItemState.BACKLOG, issue_number="42", pr_number=None)
         assert primary is not None
         assert primary["id"] == "triage"
         assert primary["handler"] == "start_agent"
 
     def test_researched_has_develop(self) -> None:
-        primary, _ = _get_actions(WorkItemState.RESEARCHED, issue_number="42", pr_number=None)
+        primary, _ = get_actions(WorkItemState.RESEARCHED, issue_number="42", pr_number=None)
         assert primary["id"] == "develop"
 
     def test_pr_ready_to_merge_with_issue_has_integrate(self) -> None:
-        primary, secondary = _get_actions(WorkItemState.PR_READY_TO_MERGE, issue_number="42", pr_number=123)
+        primary, secondary = get_actions(WorkItemState.PR_READY_TO_MERGE, issue_number="42", pr_number=123)
         assert primary["id"] == "integrate"
         assert primary["handler_args"]["command"] == "integrate-pr"
         assert len(secondary) == 2
@@ -513,7 +513,7 @@ class TestGetActions:
         assert secondary[1]["id"] == "address_pr"
 
     def test_pr_ready_to_merge_standalone_has_integrate(self) -> None:
-        primary, secondary = _get_actions(WorkItemState.PR_READY_TO_MERGE, issue_number=None, pr_number=123)
+        primary, secondary = get_actions(WorkItemState.PR_READY_TO_MERGE, issue_number=None, pr_number=123)
         assert primary["id"] == "integrate"
         assert primary["handler_args"]["command"] == "integrate-pr"
         assert primary["handler_args"]["pr"] == 123
@@ -522,16 +522,16 @@ class TestGetActions:
         assert secondary[1]["id"] == "address_pr"
 
     def test_pr_ci_running_has_review(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_CI_RUNNING, issue_number=None, pr_number=99)
+        primary, _ = get_actions(WorkItemState.PR_CI_RUNNING, issue_number=None, pr_number=99)
         assert primary["id"] == "review_pr"
         assert primary["style"] == "neutral"
 
     def test_pr_draft_has_review(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_DRAFT, issue_number=None, pr_number=99)
+        primary, _ = get_actions(WorkItemState.PR_DRAFT, issue_number=None, pr_number=99)
         assert primary["id"] == "review_pr"
 
     def test_pr_conflicted_has_rebase_primary_no_integrate(self) -> None:
-        primary, secondary = _get_actions(WorkItemState.PR_CONFLICTED, issue_number="42", pr_number=123)
+        primary, secondary = get_actions(WorkItemState.PR_CONFLICTED, issue_number="42", pr_number=123)
         assert primary is not None
         assert primary["id"] == "rebase"
         assert primary["handler"] == "trigger_rebase"
@@ -544,16 +544,16 @@ class TestGetActions:
 
     def test_pr_conflicted_without_issue_has_no_primary(self) -> None:
         """attempt_auto_rebase() resolves via issue number; no issue means no rebase action."""
-        primary, _ = _get_actions(WorkItemState.PR_CONFLICTED, issue_number=None, pr_number=99)
+        primary, _ = get_actions(WorkItemState.PR_CONFLICTED, issue_number=None, pr_number=99)
         assert primary is None
 
     def test_pr_awaiting_review_has_review(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_AWAITING_REVIEW, issue_number="42", pr_number=123)
+        primary, _ = get_actions(WorkItemState.PR_AWAITING_REVIEW, issue_number="42", pr_number=123)
         assert primary["id"] == "review_pr"
 
     def test_pr_sova_pending_has_review_pr_command(self) -> None:
         """PR_SOVA_PENDING primary is review-pr (prompt user to trigger SOVA review)."""
-        primary, secondary = _get_actions(WorkItemState.PR_SOVA_PENDING, issue_number="42", pr_number=123)
+        primary, secondary = get_actions(WorkItemState.PR_SOVA_PENDING, issue_number="42", pr_number=123)
         assert primary is not None
         assert primary["id"] == "review_pr"
         assert primary["handler"] == "run_command"
@@ -566,43 +566,43 @@ class TestGetActions:
     def test_sova_changes_has_integrate_in_secondary(self) -> None:
         """PR_SOVA_CHANGES should always expose integrate-pr in the secondary menu
         so users can manually override SOVA verdict when the PR is actually ready."""
-        _, secondary = _get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number="42", pr_number=123)
+        _, secondary = get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number="42", pr_number=123)
         secondary_ids = [a["id"] for a in secondary]
         assert "integrate" in secondary_ids, f"integrate missing from secondary actions: {secondary_ids}"
         assert "review_pr" in secondary_ids
 
     def test_agent_running_has_no_action(self) -> None:
-        primary, secondary = _get_actions(WorkItemState.AGENT_RUNNING, issue_number="42", pr_number=None)
+        primary, secondary = get_actions(WorkItemState.AGENT_RUNNING, issue_number="42", pr_number=None)
         assert primary is None
         assert secondary == []
 
     def test_needs_spec_offers_no_researcher_action(self) -> None:
         """NEEDS_SPEC is parked: the researcher only accepts TRIAGED, so a Research button would always fail."""
-        primary, secondary = _get_actions(WorkItemState.NEEDS_SPEC, issue_number="42", pr_number=None)
+        primary, secondary = get_actions(WorkItemState.NEEDS_SPEC, issue_number="42", pr_number=None)
         assert primary is None
         assert not any(a["handler_args"].get("role") == "researcher" for a in secondary)
 
     def test_done_has_no_action(self) -> None:
-        primary, _ = _get_actions(WorkItemState.DONE, issue_number="42", pr_number=None)
+        primary, _ = get_actions(WorkItemState.DONE, issue_number="42", pr_number=None)
         assert primary is None
 
     def test_standalone_pr_actions(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_CI_FAILED, issue_number=None, pr_number=99)
+        primary, _ = get_actions(WorkItemState.PR_CI_FAILED, issue_number=None, pr_number=99)
         assert primary["id"] == "address_pr"
         assert primary["handler_args"]["pr"] == 99
 
     def test_standalone_pr_omits_empty_issue(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_CI_FAILED, issue_number=None, pr_number=99)
+        primary, _ = get_actions(WorkItemState.PR_CI_FAILED, issue_number=None, pr_number=99)
         assert "issue" not in primary["handler_args"]
 
     def test_standalone_agent_omits_empty_issue(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number=None, pr_number=99)
+        primary, _ = get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number=None, pr_number=99)
         assert "issue" not in primary["handler_args"]
         assert primary["handler_args"]["pr"] == 99
 
     def test_pr_sova_changes_has_address_agent(self) -> None:
         """PR_SOVA_CHANGES primary is the developer agent (address_review pipeline)."""
-        primary, secondary = _get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number="42", pr_number=123)
+        primary, secondary = get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number="42", pr_number=123)
         assert primary is not None
         assert primary["id"] == "address_review"
         assert primary["handler"] == "start_agent"
@@ -613,7 +613,7 @@ class TestGetActions:
 
     def test_pr_external_changes_has_address_pr_command(self) -> None:
         """PR_EXTERNAL_CHANGES primary is the /address-pr command (not developer agent)."""
-        primary, secondary = _get_actions(WorkItemState.PR_EXTERNAL_CHANGES, issue_number="42", pr_number=123)
+        primary, secondary = get_actions(WorkItemState.PR_EXTERNAL_CHANGES, issue_number="42", pr_number=123)
         assert primary is not None
         assert primary["id"] == "address_pr"
         assert primary["handler"] == "run_command"
@@ -623,7 +623,7 @@ class TestGetActions:
         assert "review_pr" in secondary_ids
 
     def test_issue_linked_cmd_includes_issue(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_CI_FAILED, issue_number="42", pr_number=99)
+        primary, _ = get_actions(WorkItemState.PR_CI_FAILED, issue_number="42", pr_number=99)
         assert primary["handler_args"]["issue"] == "42"
         assert primary["handler_args"]["pr"] == 99
 
@@ -707,7 +707,7 @@ class TestSortItems:
             {"state": "triaged", "priority": 2},
             {"state": "agent_running", "priority": 99},
         ]
-        _sort_items(items)
+        sort_items(items)
         assert items[0]["state"] == "agent_running"
 
     def test_spec_review_before_normal(self) -> None:
@@ -715,7 +715,7 @@ class TestSortItems:
             {"state": "researched", "priority": 0},
             {"state": "spec_review", "priority": 99},
         ]
-        _sort_items(items)
+        sort_items(items)
         assert items[0]["state"] == "spec_review"
 
     def test_ready_to_merge_before_triaged(self) -> None:
@@ -723,7 +723,7 @@ class TestSortItems:
             {"state": "triaged", "priority": 2},
             {"state": "pr_ready_to_merge", "priority": -1},
         ]
-        _sort_items(items)
+        sort_items(items)
         assert items[0]["state"] == "pr_ready_to_merge"
 
     def test_sova_pending_sorts_before_normal(self) -> None:
@@ -731,7 +731,7 @@ class TestSortItems:
             {"state": "triaged", "priority": 2},
             {"state": "pr_sova_pending", "priority": 99},
         ]
-        _sort_items(items)
+        sort_items(items)
         assert items[0]["state"] == "pr_sova_pending"
 
     def test_sova_changes_sorts_before_normal(self) -> None:
@@ -739,7 +739,7 @@ class TestSortItems:
             {"state": "triaged", "priority": 2},
             {"state": "pr_sova_changes", "priority": 99},
         ]
-        _sort_items(items)
+        sort_items(items)
         assert items[0]["state"] == "pr_sova_changes"
 
     def test_external_changes_sorts_before_normal(self) -> None:
@@ -747,7 +747,7 @@ class TestSortItems:
             {"state": "triaged", "priority": 2},
             {"state": "pr_external_changes", "priority": 99},
         ]
-        _sort_items(items)
+        sort_items(items)
         assert items[0]["state"] == "pr_external_changes"
 
 
@@ -1724,14 +1724,14 @@ class TestGetWorkItems:
 
     @pytest.fixture()
     def _mock_sources(self):
-        """Patch _fetch_all_sources, _fetch_sova_verdicts, and _get_project_agents."""
+        """Patch _fetch_all_sources, fetch_sova_verdicts, and _get_project_agents."""
         with (
             patch(
                 "sova.dashboard.services.work_item_service._fetch_all_sources",
                 new_callable=AsyncMock,
             ) as mock_fetch,
             patch(
-                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                "sova.dashboard.services.work_item_service.fetch_sova_verdicts",
                 new_callable=AsyncMock,
             ) as mock_verdicts,
             patch(
@@ -2300,8 +2300,8 @@ class TestAttachMergeBlockers:
         """Structural guarantee (#1111 review): the skip is keyed off
         resolution.action_id == "integrate" (exactly the condition under which
         resolve_next_action() assigns PR_READY_TO_MERGE/PR_REVIEW_EXHAUSTED), not off
-        the current _get_actions() table never listing "integrate" in both slots. A
-        hypothetical future _get_actions() edit that also lists "integrate" in the
+        the current get_actions() table never listing "integrate" in both slots. A
+        hypothetical future get_actions() edit that also lists "integrate" in the
         secondary menu for one of those states must still not get a confirm."""
         primary = {"id": "integrate"}
         secondary = [{"id": "integrate"}, {"id": "review_pr"}]
@@ -2348,7 +2348,7 @@ class TestParseReviewHistory:
     """parse_review_history() computes verdict, anchor, addressed state, and rounds."""
 
     def test_empty_history_has_no_review(self) -> None:
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         result = parse_review_history([])
         assert result["has_sova_review"] is False
@@ -2356,7 +2356,7 @@ class TestParseReviewHistory:
         assert result["address_cycles"] == 0
 
     def test_verdict_marker_is_recognized(self) -> None:
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2373,14 +2373,14 @@ class TestParseReviewHistory:
 
     def test_review_without_marker_is_skipped(self) -> None:
         """A human review (no SOVA marker) must not satisfy the verdict scan."""
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [{"state": "APPROVED", "body": "Looks good to me!", "submitted_at": "2026-01-01T00:00:00Z"}]
         result = parse_review_history(reviews)
         assert result["has_sova_review"] is False
 
     def test_dismissed_review_is_skipped_for_verdict(self) -> None:
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2399,7 +2399,7 @@ class TestParseReviewHistory:
         assert result["review_head_sha"] == "abc1234"
 
     def test_dismissed_addressed_marker_not_counted_in_rounds(self) -> None:
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2418,7 +2418,7 @@ class TestParseReviewHistory:
         assert result["verdict"] == "revise"
 
     def test_addressed_marker_newer_than_verdict_supersedes_it(self) -> None:
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2439,7 +2439,7 @@ class TestParseReviewHistory:
 
     def test_verdict_newer_than_addressed_marker_is_not_superseded(self) -> None:
         """A re-review after an address cycle must report the fresh verdict, not 'addressed'."""
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2465,7 +2465,7 @@ class TestParseReviewHistory:
 
     def test_submitted_at_is_the_ordering_key_not_array_position(self) -> None:
         """Entries out of chronological order in the list must still scan newest-first."""
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2483,7 +2483,7 @@ class TestParseReviewHistory:
         assert result["verdict"] == "approve"
 
     def test_multiple_addressed_markers_count_as_multiple_rounds(self) -> None:
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2507,7 +2507,7 @@ class TestParseReviewHistory:
 
     def test_trusted_login_rejects_forged_verdict_marker(self) -> None:
         """A marker authored by someone other than the trusted login must not be trusted."""
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2522,7 +2522,7 @@ class TestParseReviewHistory:
 
     def test_trusted_login_rejects_forged_addressed_marker(self) -> None:
         """A forged sova-addressed marker must not inflate the address-cycle count."""
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2536,7 +2536,7 @@ class TestParseReviewHistory:
         assert result["address_cycles"] == 0
 
     def test_trusted_login_is_case_insensitive(self) -> None:
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2551,7 +2551,7 @@ class TestParseReviewHistory:
 
     def test_empty_trusted_login_disables_the_filter(self) -> None:
         """Back-compat: callers that have no configured identity still get markers through."""
-        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.work.verdict import parse_review_history
 
         reviews = [
             {
@@ -2570,7 +2570,7 @@ class TestResolveSovaVerdict:
 
     @pytest.mark.asyncio
     async def test_no_pr_number_returns_no_review(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+        from sova.work.verdict import resolve_sova_verdict
 
         result = await resolve_sova_verdict("42", pr_number=None)
         assert result["has_sova_review"] is False
@@ -2578,15 +2578,15 @@ class TestResolveSovaVerdict:
     @pytest.mark.asyncio
     async def test_no_adapter_returns_no_review(self) -> None:
         """Without an adapter (no repo), there's nothing to fetch; fail open."""
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+        from sova.work.verdict import resolve_sova_verdict
 
         result = await resolve_sova_verdict("42", pr_number=1, use_cache=False)
         assert result["has_sova_review"] is False
 
     @pytest.mark.asyncio
     async def test_marker_found_via_adapter_is_reported(self, monkeypatch) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
         from sova.git.pr import PRReviewData
+        from sova.work.verdict import resolve_sova_verdict
 
         async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
             return {
@@ -2616,7 +2616,7 @@ class TestResolveSovaVerdict:
     @pytest.mark.asyncio
     async def test_no_login_to_trust_fails_closed(self, monkeypatch) -> None:
         """No configured github_user and no active gh account: fail closed, not unfiltered."""
-        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, resolve_sova_verdict
+        from sova.work.verdict import UNRESOLVED_KEY, resolve_sova_verdict
 
         async def _no_active_user() -> str | None:
             return None
@@ -2624,7 +2624,7 @@ class TestResolveSovaVerdict:
         async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
             raise AssertionError("must not fetch review history without a trusted login")
 
-        monkeypatch.setattr("sova.dashboard.services.work_verdict.get_active_gh_user", _no_active_user)
+        monkeypatch.setattr("sova.work.verdict.get_active_gh_user", _no_active_user)
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
         adapter = MagicMock(repo="owner/repo", github_user="")
 
@@ -2635,8 +2635,8 @@ class TestResolveSovaVerdict:
     @pytest.mark.asyncio
     async def test_unconfigured_github_user_falls_back_to_active_gh_account(self, monkeypatch) -> None:
         """No configured github_user: trust the ambient gh account instead of disabling the filter."""
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
         from sova.git.pr import PRReviewData
+        from sova.work.verdict import resolve_sova_verdict
 
         async def _active_user() -> str | None:
             return "dsova06"
@@ -2664,7 +2664,7 @@ class TestResolveSovaVerdict:
                 )
             }
 
-        monkeypatch.setattr("sova.dashboard.services.work_verdict.get_active_gh_user", _active_user)
+        monkeypatch.setattr("sova.work.verdict.get_active_gh_user", _active_user)
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
         adapter = MagicMock(repo="owner/repo", github_user="")
 
@@ -2674,7 +2674,7 @@ class TestResolveSovaVerdict:
 
     @pytest.mark.asyncio
     async def test_fetch_failure_fails_open(self, monkeypatch) -> None:
-        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, resolve_sova_verdict
+        from sova.work.verdict import UNRESOLVED_KEY, resolve_sova_verdict
 
         async def _boom(pr_numbers, *, repo, github_user=""):
             raise RuntimeError("API down")
@@ -2689,7 +2689,7 @@ class TestResolveSovaVerdict:
     @pytest.mark.asyncio
     async def test_unreachable_github_is_not_zero_cycles(self, monkeypatch) -> None:
         """get_pr_review_data() maps an unreachable GitHub to None, not an empty history."""
-        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, clear_verdict_cache, resolve_sova_verdict
+        from sova.work.verdict import UNRESOLVED_KEY, clear_verdict_cache, resolve_sova_verdict
 
         clear_verdict_cache()
 
@@ -2706,13 +2706,13 @@ class TestResolveSovaVerdict:
     @pytest.mark.asyncio
     async def test_truncated_history_fails_closed(self, monkeypatch) -> None:
         """A last-30 window that missed older reviews must not report an undercount."""
-        from sova.dashboard.services.work_verdict import (
+        from sova.git.pr import PRReviewData
+        from sova.work.verdict import (
             TRUNCATED_KEY,
             UNRESOLVED_KEY,
             clear_verdict_cache,
             resolve_sova_verdict,
         )
-        from sova.git.pr import PRReviewData
 
         clear_verdict_cache()
 
@@ -2744,8 +2744,8 @@ class TestResolveSovaVerdict:
     @pytest.mark.asyncio
     async def test_unresolved_verdict_is_not_cached(self, monkeypatch) -> None:
         """A non-answer must not occupy the cache for the negative TTL."""
-        from sova.dashboard.services.work_verdict import clear_verdict_cache, resolve_sova_verdict
         from sova.git.pr import PRReviewData
+        from sova.work.verdict import clear_verdict_cache, resolve_sova_verdict
 
         clear_verdict_cache()
         calls = 0
@@ -2782,8 +2782,8 @@ class TestResolveSovaVerdict:
 
     @pytest.mark.asyncio
     async def test_prewarm_resolves_many_prs_in_one_call(self, monkeypatch) -> None:
-        from sova.dashboard.services.work_verdict import _fetch_sova_verdicts, clear_verdict_cache
         from sova.git.pr import PRReviewData
+        from sova.work.verdict import clear_verdict_cache, fetch_sova_verdicts
 
         clear_verdict_cache()
         seen: list[list[int]] = []
@@ -2809,11 +2809,11 @@ class TestResolveSovaVerdict:
 
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
         monkeypatch.setattr(
-            "sova.dashboard.services.work_verdict.build_verdict_adapter",
+            "sova.work.verdict.build_verdict_adapter",
             lambda project_dir, *, config=None: MagicMock(repo="owner/repo", github_user="bot"),
         )
 
-        verdicts = await _fetch_sova_verdicts(
+        verdicts = await fetch_sova_verdicts(
             {"1": {"number": 11}, "2": {"number": 12}},
             unlinked_prs=[{"number": 13}],
         )
@@ -2824,8 +2824,8 @@ class TestResolveSovaVerdict:
 
     @pytest.mark.asyncio
     async def test_cache_hit_skips_refetch(self, monkeypatch) -> None:
-        from sova.dashboard.services.work_verdict import clear_verdict_cache, resolve_sova_verdict
         from sova.git.pr import PRReviewData
+        from sova.work.verdict import clear_verdict_cache, resolve_sova_verdict
 
         clear_verdict_cache()
         calls = 0
@@ -2848,8 +2848,8 @@ class TestResolveSovaVerdict:
     @pytest.mark.asyncio
     async def test_same_pr_number_in_two_projects_does_not_share_verdict(self, monkeypatch, tmp_path: Path) -> None:
         """The verdict cache must not let one project answer for another's PR number."""
-        from sova.dashboard.services.work_verdict import clear_verdict_cache, resolve_sova_verdict
         from sova.git.pr import PRReviewData
+        from sova.work.verdict import clear_verdict_cache, resolve_sova_verdict
 
         clear_verdict_cache()
         repo_verdicts = {"org/project-a": "approve", "org/project-b": "revise"}
@@ -2885,7 +2885,7 @@ class TestResolveSovaVerdict:
 
     @pytest.mark.asyncio
     async def test_invalidate_verdict_forces_a_fresh_fetch(self, monkeypatch) -> None:
-        from sova.dashboard.services.work_verdict import clear_verdict_cache, invalidate_verdict, resolve_sova_verdict
+        from sova.work.verdict import clear_verdict_cache, invalidate_verdict, resolve_sova_verdict
 
         clear_verdict_cache()
         calls = 0
@@ -2904,7 +2904,7 @@ class TestResolveSovaVerdict:
         assert calls == 2
 
     def test_invalidate_verdict_is_a_noop_without_a_cache_entry(self) -> None:
-        from sova.dashboard.services.work_verdict import (
+        from sova.work.verdict import (
             _cache_get,
             _cache_put,
             clear_verdict_cache,
@@ -2920,7 +2920,7 @@ class TestResolveSovaVerdict:
         clear_verdict_cache()
 
     def test_invalidate_verdict_is_a_noop_when_pr_number_is_none(self) -> None:
-        from sova.dashboard.services.work_verdict import (
+        from sova.work.verdict import (
             _cache_get,
             _cache_put,
             clear_verdict_cache,
@@ -2941,7 +2941,7 @@ class TestPrewarmVerdictCache:
 
     @pytest.mark.asyncio
     async def test_no_login_to_trust_skips_prewarm_entirely(self, monkeypatch) -> None:
-        from sova.dashboard.services.work_verdict import _cache_get, _prewarm_verdict_cache, clear_verdict_cache
+        from sova.work.verdict import _cache_get, _prewarm_verdict_cache, clear_verdict_cache
 
         clear_verdict_cache()
 
@@ -2951,7 +2951,7 @@ class TestPrewarmVerdictCache:
         async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
             raise AssertionError("must not fetch review history without a trusted login")
 
-        monkeypatch.setattr("sova.dashboard.services.work_verdict.get_active_gh_user", _no_active_user)
+        monkeypatch.setattr("sova.work.verdict.get_active_gh_user", _no_active_user)
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
         adapter = MagicMock(repo="owner/repo", github_user="")
 
@@ -2962,13 +2962,13 @@ class TestPrewarmVerdictCache:
 
 
 class TestFetchSovaVerdictsBatch:
-    """_fetch_sova_verdicts() batches resolve_sova_verdict() across issues and unlinked PRs."""
+    """fetch_sova_verdicts() batches resolve_sova_verdict() across issues and unlinked PRs."""
 
     @pytest.mark.asyncio
     async def test_linked_and_unlinked_prs_both_resolve(self, monkeypatch) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+        from sova.dashboard.services.work_item_service import fetch_sova_verdicts
 
-        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr("sova.work.verdict.load_config", MagicMock(return_value=MagicMock()))
         monkeypatch.setattr(
             "sova.adapters.create_adapter",
             MagicMock(return_value=MagicMock(repo="owner/repo", github_user="bot")),
@@ -2979,42 +2979,42 @@ class TestFetchSovaVerdictsBatch:
 
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
 
-        result = await _fetch_sova_verdicts({"42": {"number": 100}}, unlinked_prs=[{"number": 200}])
+        result = await fetch_sova_verdicts({"42": {"number": 100}}, unlinked_prs=[{"number": 200}])
 
         assert result["42"]["has_sova_review"] is False
         assert result["pr:200"]["has_sova_review"] is False
 
     @pytest.mark.asyncio
     async def test_unlinked_pr_without_number_is_skipped(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+        from sova.dashboard.services.work_item_service import fetch_sova_verdicts
 
-        result = await _fetch_sova_verdicts({}, unlinked_prs=[{"number": None}])
+        result = await fetch_sova_verdicts({}, unlinked_prs=[{"number": None}])
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_adapter_build_failure_still_resolves_to_no_review(self, monkeypatch) -> None:
         """When adapter construction fails, every verdict fails open rather than raising."""
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+        from sova.dashboard.services.work_item_service import fetch_sova_verdicts
 
         def _boom(_cfg):
             raise RuntimeError("adapter broken")
 
         monkeypatch.setattr("sova.adapters.create_adapter", _boom)
 
-        result = await _fetch_sova_verdicts({"42": {"number": 100}})
+        result = await fetch_sova_verdicts({"42": {"number": 100}})
         assert result["42"]["has_sova_review"] is False
 
     @pytest.mark.asyncio
     async def test_resolve_sova_verdict_exception_does_not_abort_the_batch(self, monkeypatch) -> None:
-        from sova.dashboard.services import work_verdict
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+        from sova.dashboard.services.work_item_service import fetch_sova_verdicts
+        from sova.work import verdict as work_verdict
 
         async def _boom(*args, **kwargs):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(work_verdict, "resolve_sova_verdict", _boom)
 
-        result = await _fetch_sova_verdicts({"42": {"number": 100}})
+        result = await fetch_sova_verdicts({"42": {"number": 100}})
         assert result["42"]["has_sova_review"] is False
 
 
@@ -3035,7 +3035,7 @@ class TestGetWorkItemsConfigLoadFailure:
             raise RuntimeError("config broken")
 
         monkeypatch.setattr("sova.dashboard.services.work_item_service.load_config", _boom)
-        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", _boom)
+        monkeypatch.setattr("sova.work.verdict.load_config", _boom)
 
         with patch("sova.dashboard.services.work_item_service.log") as mock_log:
             result = await get_work_items(project_dir=tmp_path)
@@ -3083,12 +3083,12 @@ class TestFetchAllSourcesProjectDir:
 
 
 class TestBuildPrFactsMergeState:
-    """_build_pr_facts() reads merge_state from pr_data (#1109)."""
+    """build_pr_facts() reads merge_state from pr_data (#1109)."""
 
     def test_merge_state_is_read_from_pr_data(self) -> None:
-        from sova.dashboard.services.work_state import _build_pr_facts
+        from sova.work.state import build_pr_facts
 
-        facts = _build_pr_facts(
+        facts = build_pr_facts(
             {"state": "OPEN", "ci_status": "none", "mergeable": "MERGEABLE", "merge_state": "BEHIND"},
             None,
             external_reviews_enabled=False,
@@ -3098,9 +3098,9 @@ class TestBuildPrFactsMergeState:
     def test_missing_merge_state_degrades_to_empty(self) -> None:
         """A pr_data dict cached before this field existed must not raise; it
         falls back to the older mergeable field via _github_will_merge()."""
-        from sova.dashboard.services.work_state import _build_pr_facts
+        from sova.work.state import build_pr_facts
 
-        facts = _build_pr_facts(
+        facts = build_pr_facts(
             {"state": "OPEN", "ci_status": "passed", "mergeable": "MERGEABLE"},
             None,
             external_reviews_enabled=False,
@@ -3110,10 +3110,10 @@ class TestBuildPrFactsMergeState:
     def test_unresolved_verdict_sets_review_history_unresolved(self) -> None:
         """A verdict dict carrying UNRESOLVED_KEY (GitHub unreachable) must flow
         through to PRFacts so resolve_next_action() can fail closed on it."""
-        from sova.dashboard.services.work_state import _build_pr_facts
-        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY
+        from sova.work.state import build_pr_facts
+        from sova.work.verdict import UNRESOLVED_KEY
 
-        facts = _build_pr_facts(
+        facts = build_pr_facts(
             {"state": "OPEN", "ci_status": "passed", "mergeable": "MERGEABLE"},
             {"has_sova_review": False, "address_cycles": 0, UNRESOLVED_KEY: True},
             external_reviews_enabled=False,
@@ -3122,10 +3122,10 @@ class TestBuildPrFactsMergeState:
         assert facts.review_history_truncated is False
 
     def test_truncated_verdict_sets_review_history_truncated(self) -> None:
-        from sova.dashboard.services.work_state import _build_pr_facts
-        from sova.dashboard.services.work_verdict import TRUNCATED_KEY, UNRESOLVED_KEY
+        from sova.work.state import build_pr_facts
+        from sova.work.verdict import TRUNCATED_KEY, UNRESOLVED_KEY
 
-        facts = _build_pr_facts(
+        facts = build_pr_facts(
             {"state": "OPEN", "ci_status": "passed", "mergeable": "MERGEABLE"},
             {"has_sova_review": False, "address_cycles": 0, UNRESOLVED_KEY: True, TRUNCATED_KEY: True},
             external_reviews_enabled=False,
@@ -3133,9 +3133,9 @@ class TestBuildPrFactsMergeState:
         assert facts.review_history_truncated is True
 
     def test_resolved_verdict_leaves_review_history_unresolved_false(self) -> None:
-        from sova.dashboard.services.work_state import _build_pr_facts
+        from sova.work.state import build_pr_facts
 
-        facts = _build_pr_facts(
+        facts = build_pr_facts(
             {"state": "OPEN", "ci_status": "passed", "mergeable": "MERGEABLE"},
             {"has_sova_review": True, "verdict": "approve", "address_cycles": 1},
             external_reviews_enabled=False,
@@ -3175,24 +3175,24 @@ class TestAwaitingBotRereview:
         assert work_stage(item["state"]) == WorkStage.REVIEW
 
     def test_reason_chain_names_the_stale_bot_review(self) -> None:
-        from sova.dashboard.services.work_state import _build_pr_facts
+        from sova.work.state import build_pr_facts
 
         pr = {**self._PR, "computed_state": "awaiting_bot_rereview"}
-        facts = _build_pr_facts(pr, self._VERDICT, external_reviews_enabled=True, max_address_cycles=3)
+        facts = build_pr_facts(pr, self._VERDICT, external_reviews_enabled=True, max_address_cycles=3)
         resolution = resolve_next_action(facts)
         assert resolution.reason_chain[-1] == "bot_rereview_pending"
         assert "re-review" in describe_reason_chain(resolution.reason_chain, facts)[-1]
         assert resolution.merge_blockers
 
     def test_state_label_and_color_for_awaiting_bot_rereview(self) -> None:
-        from sova.dashboard.services.work_state import state_color, state_label
+        from sova.work.state import state_color, state_label
 
         assert state_label("pr_awaiting_bot_rereview") == "Awaiting Bot Re-review"
         assert state_color("pr_awaiting_bot_rereview") == "blue"
         assert state_label("awaiting_bot_rereview") == "Awaiting Bot Re-review"
 
     def test_get_actions_awaiting_bot_rereview_has_no_integrate(self) -> None:
-        primary, secondary = _get_actions(WorkItemState.PR_AWAITING_BOT_REREVIEW, issue_number="42", pr_number=100)
+        primary, secondary = get_actions(WorkItemState.PR_AWAITING_BOT_REREVIEW, issue_number="42", pr_number=100)
         assert primary is None
         assert "integrate" not in [a["id"] for a in secondary]
 
@@ -3214,7 +3214,7 @@ class TestAwaitingBotRereview:
 
     def test_dependency_graph_maps_awaiting_bot_rereview_to_awaiting_review(self) -> None:
         from sova.dashboard.routers.dependencies import _PR_STATE_ACTIONS, _PR_STATE_MAP
-        from sova.dashboard.services.pr_service import ComputedPRState
+        from sova.work.pr_state import ComputedPRState
 
         pr_state = _PR_STATE_MAP[ComputedPRState.AWAITING_BOT_REREVIEW]
         assert pr_state == "awaiting_review"
@@ -3264,8 +3264,8 @@ class TestAwaitingBotRereview:
         assert "integrate" in [a["id"] for a in item["secondary_actions"]]
 
     def test_awaiting_bot_rereview_sorts_with_awaiting_review(self) -> None:
-        """A waiting state: it stays in _sort_items()' default bucket alongside PR_AWAITING_REVIEW."""
-        from sova.dashboard.services.work_state import _STATE_SORT_ORDER
+        """A waiting state: it stays in sort_items()' default bucket alongside PR_AWAITING_REVIEW."""
+        from sova.work.state import _STATE_SORT_ORDER
 
         assert WorkItemState.PR_AWAITING_BOT_REREVIEW not in _STATE_SORT_ORDER
         items = [
@@ -3273,7 +3273,7 @@ class TestAwaitingBotRereview:
             {"state": WorkItemState.PR_READY_TO_MERGE.value, "priority": 1},
             {"state": WorkItemState.PR_AWAITING_REVIEW.value, "priority": 0},
         ]
-        _sort_items(items)
+        sort_items(items)
         assert [i["state"] for i in items] == ["pr_ready_to_merge", "pr_awaiting_review", "pr_awaiting_bot_rereview"]
 
     def test_planner_passes_awaiting_bot_rereview_through_as_text(self) -> None:
@@ -3513,7 +3513,7 @@ class TestJiraDisplayName:
         mock_cfg.github_user = "dsova06"
         mock_cfg.task_source.jira_display_name = "Damian Sova"
         monkeypatch.setattr("sova.dashboard.services.work_item_service.load_config", lambda _path: mock_cfg)
-        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", lambda _path: mock_cfg)
+        monkeypatch.setattr("sova.work.verdict.load_config", lambda _path: mock_cfg)
 
         result = await get_work_items(project_dir=tmp_path)
         assert result["jira_display_name"] == "Damian Sova"
@@ -3531,7 +3531,7 @@ class TestJiraDisplayName:
         )
         failing_load = MagicMock(side_effect=RuntimeError("config broken"))
         monkeypatch.setattr("sova.dashboard.services.work_item_service.load_config", failing_load)
-        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", failing_load)
+        monkeypatch.setattr("sova.work.verdict.load_config", failing_load)
 
         result = await get_work_items(project_dir=tmp_path)
         assert result["jira_display_name"] == ""
@@ -3590,7 +3590,7 @@ class TestWorkItemSuitability:
                 new_callable=AsyncMock,
             ) as mock_fetch,
             patch(
-                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                "sova.dashboard.services.work_item_service.fetch_sova_verdicts",
                 new_callable=AsyncMock,
                 return_value={},
             ),
@@ -3916,7 +3916,7 @@ class TestBoundedGraphLoad:
                 return_value=([_queue_entry("3", ["agent:ready"])], [], [], {"agents": [], "completed": []}),
             ),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                "sova.dashboard.services.work_item_service.fetch_sova_verdicts",
                 new_callable=AsyncMock,
                 return_value={},
             ),
@@ -3978,7 +3978,7 @@ class TestBoundedGraphLoad:
                 return_value=([_queue_entry("3", ["agent:ready"])], [], [], {"agents": [], "completed": []}),
             ),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                "sova.dashboard.services.work_item_service.fetch_sova_verdicts",
                 new_callable=AsyncMock,
                 return_value={},
             ),
@@ -4796,7 +4796,7 @@ class TestGraphCacheAcrossPolls:
                 return_value=sources,
             ),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                "sova.dashboard.services.work_item_service.fetch_sova_verdicts",
                 new_callable=AsyncMock,
                 return_value={},
             ),

@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from sova.dashboard.services import work_state
+from sova.work import state as work_state
 from tests.conftest import DASHBOARD_DIR
 from tests.test_dashboard_agents_modules import _require_node
 
@@ -235,7 +235,7 @@ class TestBadgeVocabulary:
         assert "rounded-full" not in status
 
     def test_the_token_set_is_the_one_work_state_emits(self) -> None:
-        """work_state.py decides the state-to-color token; the macro table, STATE_BADGE_CLASSES and the hex lookup
+        """sova/work/state.py decides the state-to-color token; the macro table, STATE_BADGE_CLASSES and the hex lookup
         must cover exactly those tokens, so a token added in Python cannot render as gray on one side only."""
         emitted = (
             set(work_state._STATE_COLORS.values())

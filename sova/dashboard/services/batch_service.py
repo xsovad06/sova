@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.config.loader import load_config
-from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.queue_service import VALID_STATES_FOR_ACTION, invalidate_queue_cache
 from sova.utils.logging import get_logger
+from sova.work.feed import FeedEventSeverity, emit_safe
 
 if TYPE_CHECKING:
     from sova.adapters.base import TaskAdapter

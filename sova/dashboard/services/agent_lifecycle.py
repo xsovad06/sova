@@ -208,7 +208,6 @@ from sova.dashboard.services.agent_validation import (
 from sova.dashboard.services.agent_validation import (
     fetch_launch_task as fetch_launch_task,
 )
-from sova.dashboard.services.feed_service import emit_safe
 from sova.db.session import get_session
 from sova.ipc.codex_runtime import _codex_extra_env
 from sova.ipc.runtime import (
@@ -225,6 +224,7 @@ from sova.llm.client import RUN_MODEL_OVERRIDE_ENV
 from sova.utils.agent_leases import acquire_lease_for, release_lease
 from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
+from sova.work.feed import emit_safe
 
 log = get_logger(component="dashboard.control")
 
@@ -630,7 +630,7 @@ async def _record_budget_override(issue: str, run_id: int, budget_error: dict, p
                     limit_usd=Decimal(str(limit)),
                 )
                 session.add(override)
-        from sova.dashboard.services.feed_service import FeedEventSeverity
+        from sova.work.feed import FeedEventSeverity
 
         emit_safe(
             f"Budget override: issue #{issue} (${spend} / ${limit})",

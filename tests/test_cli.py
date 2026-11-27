@@ -2657,7 +2657,8 @@ class TestMergeSubjectCommand:
     def test_scope_hint_for_a_jira_title_says_the_scope_is_optional_after_the_key(self) -> None:
         result = self._invoke(title="[PROJ-7] perf: x", is_jira=True)
 
-        assert "(a scope is optional only after a [KEY-N] ticket key)" in result.output
+        # The scope list ahead of the hint wraps at the console width, so compare with the line breaks collapsed.
+        assert "(a scope is optional only after a [KEY-N] ticket key)" in " ".join(result.output.split())
 
     def test_bracket_prefixed_title_is_rejected_for_a_github_project(self) -> None:
         result = self._invoke(title="[WIP-1] feat: add widget")

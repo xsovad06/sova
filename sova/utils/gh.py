@@ -24,7 +24,7 @@ _PUSH_PERMISSION_TIMEOUT_SECONDS = 15
 # Repo push permissions change rarely; cache confirmed (ALLOWED/DENIED)
 # results to avoid spending the shared 5000/hr GitHub API quota re-checking
 # on every SyncStep run under fleet concurrency, matching the TTL-cache
-# pattern used by coderabbit_quota.py, pr_service.py, and git/pr.py's
+# pattern used by coderabbit_quota.py, work/pr_state.py, and git/pr.py's
 # _find_pr_cache. UNKNOWN is never cached: it can reflect a transient
 # failure, and the fail-open contract already tolerates re-checking it.
 _PUSH_PERMISSION_CACHE_TTL = 300.0  # 5 minutes

@@ -7,7 +7,8 @@ at the package root. Import from submodules directly::
     from sova.core.context import ExecutionContext
     from sova.core.state import TaskStatus
 
-Allowed imports: sova.llm, sova.git, sova.ipc, sova.adapters, sova.db, sova.config, sova.utils.
+Allowed imports: the sibling layer sova.work, sova.llm, sova.git, sova.ipc, sova.adapters, sova.db, sova.config,
+  sova.utils.
 Outside the layers contract (import-linter does not check these): sova.commands.
 """
 

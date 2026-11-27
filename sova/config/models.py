@@ -528,6 +528,7 @@ DEFAULT_COMMIT_SCOPES: tuple[str, ...] = (
     "db",
     "awareness",
     "oversight",
+    "work",
     "deps",
 )
 

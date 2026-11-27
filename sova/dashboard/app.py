@@ -114,7 +114,6 @@ from sova.dashboard.services.daemon_registry import (
 )
 from sova.dashboard.services.editor_service import EditorUnavailableError
 from sova.dashboard.services.work_service import _TERMINAL
-from sova.dashboard.services.work_state import run_actions_payload
 from sova.dashboard.settings_meta import GROUPS as SETTING_GROUPS
 from sova.dashboard.settings_meta import SECTION_LABELS, SECTIONS, SUPERVISOR_SWITCH_GROUPS
 from sova.dashboard.settings_meta import get_meta as get_setting_meta
@@ -122,6 +121,7 @@ from sova.db.session import close_db, get_session, init_db, init_db_for_project
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
 from sova.utils.version import get_code_staleness, record_startup_code_sha
+from sova.work.state import run_actions_payload
 
 log = get_logger(component="dashboard.app")
 
@@ -704,7 +704,7 @@ def priorities_json() -> Markup:
 def run_actions_json() -> Markup:
     """Jinja global: JSON payload for `window.SOVA_RUN_ACTIONS` (see base.html).
 
-    The run action table (`work_state.RUN_ACTIONS`): one name, running form and colour per kind of run, so
+    The run action table (`sova.work.state.RUN_ACTIONS`): one name, running form and colour per kind of run, so
     `formatRole()` and `roleColor()` in app.js read it instead of keeping their own copy. `<` is escaped so a
     label can never close the surrounding script element.
     """
@@ -841,8 +841,9 @@ def create_app(
 
         from sova.core.output import cleanup_old_output
         from sova.dashboard.services.agent_recovery import _kill_terminal_zombies
-        from sova.dashboard.services.feed_service import get_feed_service
+        from sova.dashboard.services.feed_service import prune_old_events
         from sova.monitoring.writer import cleanup_old_resources
+        from sova.work.feed import get_feed_service
 
         gc_task: asyncio.Task | None = None
         if is_multi:
@@ -859,7 +860,7 @@ def create_app(
                     await recover_stale_runs(p)
                     await _kill_terminal_zombies(p)
                     await cleanup_old_output(p, pcfg.output.retention_days)
-                    await get_feed_service().prune_old_events(retention_days=pcfg.feed.retention_days, project_dir=p)
+                    await prune_old_events(retention_days=pcfg.feed.retention_days, project_dir=p)
                     await get_feed_service().init_counter(p)
                     await cleanup_old_resources(p)
         else:
@@ -867,7 +868,7 @@ def create_app(
             await recover_stale_runs(resolved)
             await _kill_terminal_zombies(resolved)
             await cleanup_old_output(resolved, cfg.output.retention_days)
-            await get_feed_service().prune_old_events(retention_days=cfg.feed.retention_days, project_dir=resolved)
+            await prune_old_events(retention_days=cfg.feed.retention_days, project_dir=resolved)
             await get_feed_service().init_counter(resolved)
             await cleanup_old_resources(resolved)
 

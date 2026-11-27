@@ -186,9 +186,9 @@ LLM agents may commit directly, leaving working-tree diffs empty. **Never return
 
 ### Address-Review Budget
 
-The cap lives in `resolve_next_action()` (`sova/dashboard/services/work_state.py`), the one resolver both the dashboard and the supervisor read, so neither can propose an extra cycle:
+The cap lives in `resolve_next_action()` (`sova/work/state.py`), the one resolver both the dashboard and the supervisor read, so neither can propose an extra cycle:
 
-1. `resolve_sova_verdict()` (`sova/dashboard/services/work_verdict.py`) derives `address_cycles` from `parse_review_history()`'s count of `sova-addressed` GitHub review markers and carries it on the verdict
+1. `resolve_sova_verdict()` (`sova/work/verdict.py`) derives `address_cycles` from `parse_review_history()`'s count of `sova-addressed` GitHub review markers and carries it on the verdict
 2. At `pipeline.max_address_review_cycles` (default 3, 0=unlimited) the resolver's `review_budget_exhausted` rule returns `PR_REVIEW_EXHAUSTED` with an Integrate action, ahead of every verdict- and thread-based rule, unless a bot's stale change request is still waiting for its re-review (#1358): then it returns `PR_AWAITING_BOT_REREVIEW` with no action, since `/integrate-pr` refuses to merge over that review. An unreadable review history (the count is unknown, not exhausted) is the separate `review_history_unresolved` rule just before it: `PR_AWAITING_REVIEW` with no action, a hold for the user, never Integrate (the supervisor auto-integrates on that action)
 3. `_check_address_review_circuit_breaker()` (`sova/dashboard/services/agent_handoff.py`) still runs at agent exit to stop the handoff chain auto-spawning one more cycle before the next poll, and invalidates the PR's verdict cache so the new count is visible immediately
 

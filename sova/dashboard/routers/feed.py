@@ -12,9 +12,9 @@ from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
 from sova.config.context import get_project_dir
-from sova.dashboard.services import awareness_service, feed_activity_service
-from sova.dashboard.services.feed_service import FeedService, get_feed_service
+from sova.dashboard.services import awareness_service, feed_activity_service, feed_service
 from sova.utils.logging import get_logger
+from sova.work.feed import FeedService, get_feed_service
 
 log = get_logger(component="dashboard.feed.router")
 
@@ -35,7 +35,7 @@ async def feed_stream(request: Request) -> StreamingResponse:
                     break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield feed.to_sse(event)
+                    yield feed_service.to_sse(event)
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         finally:
@@ -69,7 +69,7 @@ async def feed_history(
       has already dropped events the client missed.
     """
     if before_id > 0:
-        events, has_more = await feed.history_page(before_id=before_id, limit=limit)
+        events, has_more = await feed_service.history_page(before_id=before_id, limit=limit)
         return {"events": events, "has_more": has_more}
 
     buffered, gap = feed.history(since_id=since_id)
@@ -84,7 +84,7 @@ async def feed_history(
         total = 0
         max_events = 5000
         while cursor is not None and total < max_events:
-            older, has_more = await feed.history_page(before_id=cursor, limit=limit)
+            older, has_more = await feed_service.history_page(before_id=cursor, limit=limit)
             older = [e for e in older if e["id"] > since_id]
             total += len(older)
             all_backfill = older + all_backfill

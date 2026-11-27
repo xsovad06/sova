@@ -270,7 +270,7 @@ async def _spec_drift_caveat(ctx: ExecutionContext, spec_data: dict | None) -> s
             return ""
         log.warning("spec.code_drift", issue=ctx.issue_number, files=list(result.files))
         caveat = spec_drift_caveat(result)
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         emit_safe(
             f"Spec for #{ctx.issue_number} may be out of date",

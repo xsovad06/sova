@@ -11,7 +11,7 @@ import pytest
 
 from sova.dashboard.routers import agents as agents_router
 from sova.dashboard.routers.agents import _ConnectionManager
-from sova.dashboard.services.feed_service import FeedEventSeverity, FeedService
+from sova.work.feed import FeedEventSeverity, FeedService
 
 
 @pytest.fixture(autouse=True)

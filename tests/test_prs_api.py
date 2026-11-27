@@ -106,7 +106,7 @@ class TestSummarizeCi:
         ],
     )
     def test_summarizes_rollup(self, rollup: list[dict[str, object]] | None, expected: str) -> None:
-        from sova.dashboard.services.pr_service import _summarize_ci
+        from sova.work.pr_state import _summarize_ci
 
         assert _summarize_ci(rollup) == expected
 
@@ -115,25 +115,25 @@ class TestExtractLinkedIssue:
     """Tests for _extract_linked_issue PR-vs-issue disambiguation."""
 
     def test_prefers_closing_issues_references(self) -> None:
-        from sova.dashboard.services.pr_service import _extract_linked_issue
+        from sova.work.pr_state import _extract_linked_issue
 
         raw = {"closingIssuesReferences": [{"number": 42}], "body": "Closes #99"}
         assert _extract_linked_issue(raw) == 42
 
     def test_falls_back_to_body_parsing(self) -> None:
-        from sova.dashboard.services.pr_service import _extract_linked_issue
+        from sova.work.pr_state import _extract_linked_issue
 
         raw = {"closingIssuesReferences": [], "body": "Fixes #55"}
         assert _extract_linked_issue(raw) == 55
 
     def test_returns_none_when_no_link(self) -> None:
-        from sova.dashboard.services.pr_service import _extract_linked_issue
+        from sova.work.pr_state import _extract_linked_issue
 
         raw = {"closingIssuesReferences": [], "body": "No issue link"}
         assert _extract_linked_issue(raw) is None
 
     def test_handles_missing_fields(self) -> None:
-        from sova.dashboard.services.pr_service import _extract_linked_issue
+        from sova.work.pr_state import _extract_linked_issue
 
         assert _extract_linked_issue({}) is None
 

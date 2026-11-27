@@ -148,7 +148,7 @@ class TestRollbackIssueState:
 
         with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
-                with patch("sova.dashboard.services.feed_service.emit_safe") as emit:
+                with patch("sova.work.feed.emit_safe") as emit:
                     await rollback_issue_state(task_run.id, tmp_path)
 
         mock_adapter.transition_state.assert_not_awaited()
@@ -213,7 +213,7 @@ class TestRollbackIssueState:
 
         with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
-                with patch("sova.dashboard.services.feed_service.emit_safe") as emit:
+                with patch("sova.work.feed.emit_safe") as emit:
                     await rollback_issue_state(task_run.id, tmp_path)
 
         mock_adapter.transition_state.assert_not_awaited()

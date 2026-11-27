@@ -107,6 +107,7 @@ scope_paths() {
     roles) echo "sova/roles/ sova/dashboard/" ;;
     scheduler) echo "sova/scheduler/" ;;
     supervisor) echo "sova/supervisor/ sova/dashboard/" ;;
+    work) echo "sova/work/ sova/dashboard/" ;;
     *) echo "" ;;
   esac
 }

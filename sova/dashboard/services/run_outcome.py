@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import re
 
-from sova.dashboard.services.work_state import RunAction
 from sova.ipc.handoff import COMMAND_SOURCE_PREFIX, SUMMARY_SOURCE_KEY
+from sova.work.state import RunAction
 
 # A reviewer handoff's ``next_action`` that is not "no blocking defects" and not "address the review".
 _REVIEW_GAP_TEXT = {

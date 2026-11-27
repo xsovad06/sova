@@ -135,7 +135,7 @@ class PushStep(BaseStep):
             dropped_commits=_capped_commit_list(dropped),
         )
 
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         emit_safe(
             f"Force-pushing {ctx.branch_name}",

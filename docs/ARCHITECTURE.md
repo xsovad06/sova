@@ -37,6 +37,7 @@ sova/
       app.py                       # Main app, subcommand registration
       commands/                    # Command modules (run, triage, harden, project, pr, admin, briefing, memory, assess, migrate, commands, server, mcp, supervisor, checks, board, audit)
     core/                          # Workflow engine, steps, state machine, context, output writer, DAG executor
+    work/                          # Work domain logic beside core: state resolver and labels, review verdicts, PR state, feed event bus
     roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, planner, dispatcher)
     adapters/                      # Task source plugins (github; jira, linear, manual planned)
     llm/                           # Claude CLI wrapper, cost tracking
@@ -48,7 +49,7 @@ sova/
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
       routers/                     # 32 API routers (auth, overview, runs, costs, briefing, feed, handoff, health, lifecycle, models, tasks, queue, quota, reliability, settings, setup, agents, work, issues, roles, spec, prs, dependencies, dependency_health, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp)
-      services/                    # 58 services (action_registry, daemon_registry, editor, github_labels, llm_suggestion, model_profile, planner_issue, run, cost, models, model_map, control, feed, handoff, health, lifecycle, queue, batch, reliability, work, work_item, work_board, work_state, work_verdict, overview_stats, rebase_outcome, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_adopt, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, role, spec, pr, pr_metrics, resource, output_stream, snapshot, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health)
+      services/                    # 63 services (action_registry, daemon_registry, editor, github_labels, llm_suggestion, model_profile, planner_issue, run, cost, models, model_map, control, feed, handoff, health, lifecycle, queue, batch, reliability, work, work_item, work_board, overview_stats, rebase_outcome, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_adopt, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, role, spec, pr, pr_metrics, resource, output_stream, snapshot, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo; js/pages/<page>/ holds a page's ES modules (agents: 8 modules + actions.js + the render-utils.js leaf)
     a2a/                           # A2A (Agent-to-Agent) protocol: agent card generation, task state mapping

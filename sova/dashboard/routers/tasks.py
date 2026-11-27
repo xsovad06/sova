@@ -8,8 +8,8 @@ from fastapi import APIRouter, HTTPException
 
 from sova.config.context import get_project_dir
 from sova.config.loader import load_config
-from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.logging import get_logger
+from sova.work.state import state_color, state_label
 
 log = get_logger(component="dashboard.tasks")
 

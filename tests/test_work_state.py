@@ -8,8 +8,8 @@ import pytest
 
 from sova.adapters.base import TaskState
 from sova.core.state import TaskStatus
-from sova.dashboard.services.work_state import WorkItemState, WorkStage, work_stage
 from sova.supervisor.suitability import SuitabilityMode
+from sova.work.state import WorkItemState, WorkStage, work_stage
 
 _STATES = sorted({*(s.value for s in WorkItemState), *(s.value for s in TaskState), "not_a_state", ""})
 _MODES = [None, *(m.value for m in SuitabilityMode), "not_a_mode"]
@@ -96,7 +96,7 @@ class TestStartAction:
         ],
     )
     def test_a_pre_pr_state_starts_the_agent_its_stage_needs(self, state: str, role: str, label: str) -> None:
-        from sova.dashboard.services.work_state import start_action
+        from sova.work.state import start_action
 
         action = start_action(state, 1418)
 
@@ -109,6 +109,6 @@ class TestStartAction:
         "state", ["needs_spec", "human_only", "done", "agent_running", "pr_ci_running", "pr_ready_to_merge", "", "?"]
     )
     def test_no_run_starts_from_a_parked_pr_or_unknown_state(self, state: str) -> None:
-        from sova.dashboard.services.work_state import start_action
+        from sova.work.state import start_action
 
         assert start_action(state, 7) is None

@@ -3,7 +3,7 @@
 There is no browser or JS test harness here, so these assert on the shipped source: that every
 dashboard script parses, that the Agents page wires its modules and delegated actions without
 inline handlers, that its timers go through visibilityAwarePoll at their original cadence, and
-that state labels and colors come from `work_state.py` instead of per-page tables. A missing
+that state labels and colors come from `sova/work/state.py` instead of per-page tables. A missing
 `node` skips locally but fails under CI, so a runner image without it cannot turn a JS syntax
 error into a green build.
 """
@@ -21,9 +21,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
-from sova.dashboard.services import pr_service, work_state
-from sova.dashboard.services.work_state import WorkItemState, state_color, state_label
 from sova.supervisor.dependency_graph import DependencyGraph
+from sova.work import pr_state
+from sova.work import state as work_state
+from sova.work.state import WorkItemState, state_color, state_label
 from tests.conftest import AGENTS_PAGE_JS_DIR, DASHBOARD_DIR, WORK_PAGE_JS_DIR
 
 _STATIC = DASHBOARD_DIR / "static"
@@ -2360,7 +2361,7 @@ class TestStateDisplayHasOneSource:
         assert state_label(pr_state) == state_label(work_item_state)
 
     def test_every_computed_pr_state_is_registered(self) -> None:
-        for member in pr_service.ComputedPRState:
+        for member in pr_state.ComputedPRState:
             assert member.value in work_state._PR_STATE_META, member
 
     def test_every_tracker_state_is_registered(self) -> None:
@@ -2415,8 +2416,8 @@ class TestStateDisplayHasOneSource:
         assert badge
         assert set(re.findall(r"^\s*'([\w-]+)':", badge.group(1), re.MULTILINE)) <= hex_tokens
 
-    def test_pr_service_keeps_no_label_table_of_its_own(self) -> None:
-        assert not hasattr(pr_service, "_STATE_LABELS")
+    def test_pr_state_keeps_no_label_table_of_its_own(self) -> None:
+        assert not hasattr(pr_state, "_STATE_LABELS")
 
     def test_client_keeps_no_state_color_tables(self) -> None:
         for name in ("PR_STATE_COLORS", "ISSUE_STATE_COLORS", "prStateBadgeColor", "issueStateColor"):
@@ -2429,7 +2430,7 @@ class TestStateDisplayHasOneSource:
 
 class TestStatePayloads:
     def test_pr_row_carries_label_and_color(self) -> None:
-        computed = pr_service.ComputedPRState.CI_FAILED.value
+        computed = pr_state.ComputedPRState.CI_FAILED.value
         assert state_label(computed) == "CI Failed"
         assert state_color(computed) == "red"
 

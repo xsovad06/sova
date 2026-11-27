@@ -17,13 +17,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.config.loader import load_config
 from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
-from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.db.session import get_session
 from sova.ipc.control import EXIT_OUTCOME_UNKNOWN, normalize_signal_exit
 from sova.llm.phase_usage import PhaseTally
 from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE, SOVA_VERDICT_MARKER_RE
+from sova.work.feed import FeedEventSeverity, emit_safe
 
 if TYPE_CHECKING:
     from sova.core.pr_diff_guard import PinDowngrade

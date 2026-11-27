@@ -3,8 +3,8 @@
 Provides the mandatory pipeline: Triage -> Research -> Develop,
 with each role enforcing state gates on the tracker.
 
-Allowed imports: sova.core and every layer below it (sova.llm, sova.git, sova.ipc, sova.adapters, sova.db,
-  sova.config, sova.utils).
+Allowed imports: sova.core, its sibling sova.work, and every layer below them (sova.llm, sova.git, sova.ipc,
+  sova.adapters, sova.db, sova.config, sova.utils).
 """
 
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment

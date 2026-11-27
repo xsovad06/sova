@@ -19,9 +19,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sova.adapters.base import TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.state import TASK_RUN_TERMINAL
-from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
-from sova.dashboard.services.work_state import _build_pr_facts, resolve_next_action
-from sova.dashboard.services.work_verdict import resolve_sova_verdict
 from sova.db.models import SupervisorDecision
 from sova.git.pr import PRInfo, find_pr_for_issue_checked
 from sova.supervisor.dependency_graph import (
@@ -58,6 +55,9 @@ from sova.supervisor.gates.slots import check_slot_gate, get_alive_count
 from sova.supervisor.gates.stale_commands import check_stale_commands_gate
 from sova.supervisor.planner import PlanResult
 from sova.utils.logging import get_logger
+from sova.work.feed import FeedEventSeverity, emit_safe
+from sova.work.state import build_pr_facts, resolve_next_action
+from sova.work.verdict import resolve_sova_verdict
 
 log = get_logger(component="supervisor.progression")
 
@@ -722,8 +722,8 @@ class TaskProgressionEngine:
         """Execute a RESET_STALE_STATE decision: roll back the issue to the appropriate prior state."""
         from sqlalchemy import select
 
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
         from sova.db.models import TaskRun
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         try:
             async with self._session_factory() as session:
@@ -780,7 +780,7 @@ class TaskProgressionEngine:
         decision may be stale by the time it executes, e.g. a manual
         ``/agents/start`` request racing in between and spawning an agent.
         """
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         try:
             current_state = await self._adapter.get_state(str(issue_number))
@@ -1287,7 +1287,7 @@ class TaskProgressionEngine:
     async def _fetch_enriched_pr(self, pr_number: int) -> dict | None:
         """Fetch enriched PR data from the PR service cache for gate checks."""
         try:
-            from sova.dashboard.services.pr_service import list_open_prs_with_state
+            from sova.work.pr_state import list_open_prs_with_state
 
             prs = await list_open_prs_with_state(self._project_dir)
             for pr in prs:
@@ -1314,7 +1314,7 @@ class TaskProgressionEngine:
 
         Returns (action, pr_info). Both the verdict and the facts are assembled
         through the same shared helpers the dashboard uses
-        (resolve_sova_verdict() then _build_pr_facts()), so the supervisor and
+        (resolve_sova_verdict() then build_pr_facts()), so the supervisor and
         dashboard cannot disagree about what a PR should do next. The resolver
         decides *what* the action would be; the existing
         auto_integrate/auto_address_review/auto_rebase config flags decide
@@ -1340,7 +1340,7 @@ class TaskProgressionEngine:
             log.debug("refine_in_review.enrichment_failed", issue=issue, pr=pr_info.number)
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
-        facts = _build_pr_facts(
+        facts = build_pr_facts(
             enriched_pr,
             verdict_data,
             external_reviews_enabled=self._config.external_reviews.enabled,

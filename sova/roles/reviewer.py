@@ -564,9 +564,9 @@ class ReviewerRole(AgentRole):
 
         Raises the read's own errors (RuntimeError, OSError, ValueError, KeyError) for the caller to fail open on.
         """
-        from sova.dashboard.services.work_verdict import parse_review_history
         from sova.git.pr import get_pr_review_data
         from sova.utils.gh import get_active_gh_user
+        from sova.work.verdict import parse_review_history
 
         data = (await get_pr_review_data([ctx.pr_number], repo=ctx.repo, github_user=ctx.config.github_user)).get(
             ctx.pr_number

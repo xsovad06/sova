@@ -1293,7 +1293,7 @@ class TestFetchPrMapUnknownState:
     async def test_missing_computed_state_label_follows_the_awaiting_review_fallback(self) -> None:
         """pr_state falls back to awaiting_review; the label and dot must not say "Unknown" beside it."""
         from sova.dashboard.routers.dependencies import _fetch_pr_map
-        from sova.dashboard.services.work_state import state_color, state_label
+        from sova.work.state import state_color, state_label
 
         mock_prs = [{"number": 1, "url": "", "linked_issues": [10]}]
         with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", return_value=mock_prs):
@@ -1367,7 +1367,7 @@ class TestFetchPrMap:
         rebase endpoint (attempt_auto_rebase), not address-pr: that command
         addresses review findings and CI failures, never merge conflicts."""
         from sova.dashboard.routers.dependencies import _PR_STATE_ACTIONS, _PR_STATE_MAP
-        from sova.dashboard.services.pr_service import ComputedPRState
+        from sova.work.pr_state import ComputedPRState
 
         assert _PR_STATE_MAP[ComputedPRState.CONFLICTED] == "conflicted"
         actions = _PR_STATE_ACTIONS["conflicted"]

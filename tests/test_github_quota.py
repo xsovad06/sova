@@ -180,7 +180,7 @@ class TestEmitEvents:
     @pytest.mark.asyncio
     async def test_emit_hit_event_static_method_catches_import_error(self) -> None:
         with (
-            patch("sova.dashboard.services.feed_service.emit_safe", side_effect=ImportError("boom")),
+            patch("sova.work.feed.emit_safe", side_effect=ImportError("boom")),
             capture_logs() as logs,
         ):
             GitHubQuotaTracker._emit_hit_event()
@@ -190,7 +190,7 @@ class TestEmitEvents:
     @pytest.mark.asyncio
     async def test_emit_recovery_event_static_method_catches_import_error(self) -> None:
         with (
-            patch("sova.dashboard.services.feed_service.emit_safe", side_effect=ImportError("boom")),
+            patch("sova.work.feed.emit_safe", side_effect=ImportError("boom")),
             capture_logs() as logs,
         ):
             GitHubQuotaTracker._emit_recovery_event()

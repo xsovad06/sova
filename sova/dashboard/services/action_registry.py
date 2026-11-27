@@ -148,7 +148,7 @@ async def finish(
 ) -> None:
     """Record how an action ended. An unknown id (already dismissed, or reset) is ignored.
 
-    *fix* is a work item action (``work_state``'s ``{id, label, style, handler, handler_args}`` shape) that
+    *fix* is a work item action (``sova.work.state``'s ``{id, label, style, handler, handler_args}`` shape) that
     remedies a failure; the card shows it as a button beside the message.
     """
     if _record(project_dir, action_id, ok=ok, message=message, fix=fix):

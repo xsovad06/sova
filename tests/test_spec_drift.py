@@ -398,7 +398,7 @@ class TestDevelopDriftCaveat:
         sha = _git(repo, "rev-parse", "HEAD")
         self._write_spec(repo, sha)
         _commit(repo, {"sova/core/a.py": "a2\n"})
-        with patch("sova.dashboard.services.feed_service.emit_safe") as emit:
+        with patch("sova.work.feed.emit_safe") as emit:
             ctx = self._ctx(repo)
             first = await _spec_drift_caveat(ctx, _read_approved_spec(ctx))
             second = await _spec_drift_caveat(ctx, _read_approved_spec(ctx))
@@ -410,7 +410,7 @@ class TestDevelopDriftCaveat:
     async def test_no_drift_is_silent(self, repo: Path) -> None:
         sha = _git(repo, "rev-parse", "HEAD")
         self._write_spec(repo, sha)
-        with patch("sova.dashboard.services.feed_service.emit_safe") as emit:
+        with patch("sova.work.feed.emit_safe") as emit:
             ctx = self._ctx(repo)
             assert await _spec_drift_caveat(ctx, _read_approved_spec(ctx)) == ""
         emit.assert_not_called()
@@ -419,7 +419,7 @@ class TestDevelopDriftCaveat:
         sha = _git(repo, "rev-parse", "HEAD")
         self._write_spec(repo, sha, "draft")
         _commit(repo, {"sova/core/a.py": "a2\n"})
-        with patch("sova.dashboard.services.feed_service.emit_safe") as emit:
+        with patch("sova.work.feed.emit_safe") as emit:
             ctx = self._ctx(repo)
             assert await _spec_drift_caveat(ctx, _read_approved_spec(ctx)) == ""
         emit.assert_not_called()
@@ -442,7 +442,7 @@ class TestDevelopDriftCaveat:
         ctx.task = MagicMock()
         with (
             patch("sova.core.spec_utils.read_spec", wraps=read_spec) as read,
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
             patch("sova.core.steps.develop._issue_context_for_develop", new=AsyncMock()),
         ):
             args, _ = await _build_develop_args(ctx)

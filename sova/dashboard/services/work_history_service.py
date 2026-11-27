@@ -26,14 +26,14 @@ from sova.dashboard.services.work_service import (
     as_utc,
     history_filters,
 )
-from sova.dashboard.services.work_state import (
+from sova.dashboard.services.work_title_service import resolve_titles
+from sova.db.models import TaskRun
+from sova.utils.formatting import format_cost_usd
+from sova.work.state import (
     HistoryState,
     history_state_color,
     history_state_label,
 )
-from sova.dashboard.services.work_title_service import resolve_titles
-from sova.db.models import TaskRun
-from sova.utils.formatting import format_cost_usd
 
 # Statuses of a run that did its job. A researcher run that waits for the spec to be approved ends awaiting_approval.
 SUCCEEDED = "done"

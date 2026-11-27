@@ -24,9 +24,9 @@ from sova.dashboard.services import (
     work_title_service,
 )
 from sova.dashboard.services.feed_activity_service import build_activity, local_midnight, resolve_zone
-from sova.dashboard.services.work_state import HistoryState, history_state_color
 from sova.db.models import FeedEventRecord, StepExecution, TaskRun
 from sova.db.session import get_session
+from sova.work.state import HistoryState, history_state_color
 
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 

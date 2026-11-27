@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.config.models import ProjectConfig, SupervisorConfig
-from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.supervisor.planner import (
     _DEFAULT_MODEL,
     _VALID_ACTIONS,
@@ -17,6 +16,7 @@ from sova.supervisor.planner import (
     PlanResult,
     SupervisorPlanner,
 )
+from sova.work.pr_state import list_open_prs_with_state
 
 
 @pytest.fixture

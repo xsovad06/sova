@@ -12,9 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from sova.dashboard.services.work_state import address_pr_action, retry_rebase_action
 from sova.git.rebase import RebaseFailure
 from sova.supervisor.rebase import REBASE_MAX_COMMITS, AutoRebaseFailure
+from sova.work.state import address_pr_action, retry_rebase_action
 
 # The most conflicted files a message names; the rest are counted.
 _MAX_FILES_NAMED = 3

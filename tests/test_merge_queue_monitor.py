@@ -389,7 +389,7 @@ class TestHandleMerged:
             patch("sova.git.merge.delete_remote_branch", new_callable=AsyncMock) as mock_delete,
             patch.object(monitor, "_transition_issue_state", new_callable=AsyncMock) as mock_transition,
             patch.object(monitor, "_cleanup_local_worktree", new_callable=AsyncMock) as mock_cleanup,
-            patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit,
+            patch("sova.work.feed.emit_safe") as mock_emit,
             patch.object(monitor, "_notify"),
         ):
             await monitor._handle_merged(entry)
@@ -419,7 +419,7 @@ class TestHandleMerged:
             patch("sova.git.merge.delete_remote_branch", new_callable=AsyncMock) as mock_delete,
             patch.object(monitor, "_transition_issue_state", new_callable=AsyncMock),
             patch.object(monitor, "_cleanup_local_worktree", new_callable=AsyncMock),
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
             patch.object(monitor, "_notify"),
         ):
             await monitor._handle_merged(entry)
@@ -444,7 +444,7 @@ class TestHandleMerged:
             patch("sova.git.merge.delete_remote_branch", new_callable=AsyncMock),
             patch.object(monitor, "_transition_issue_state", new_callable=AsyncMock) as mock_transition,
             patch.object(monitor, "_cleanup_local_worktree", new_callable=AsyncMock),
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
             patch.object(monitor, "_notify"),
         ):
             await monitor._handle_merged(entry)
@@ -473,7 +473,7 @@ class TestHandleMerged:
             patch("sova.git.merge.delete_remote_branch", new_callable=AsyncMock),
             patch.object(monitor, "_transition_issue_state", new_callable=AsyncMock, side_effect=ValueError("boom")),
             patch.object(monitor, "_cleanup_local_worktree", new_callable=AsyncMock) as mock_cleanup,
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
             patch.object(monitor, "_notify"),
         ):
             await monitor._handle_merged(entry)
@@ -503,7 +503,7 @@ class TestHandleEjected:
         monitor = _make_monitor(project_dir)
 
         with (
-            patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit,
+            patch("sova.work.feed.emit_safe") as mock_emit,
             patch.object(monitor, "_notify") as mock_notify,
         ):
             await monitor._handle_ejected(entry, "UNMERGEABLE")
@@ -536,7 +536,7 @@ class TestHandleTimeout:
         monitor = _make_monitor(project_dir)
 
         with (
-            patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit,
+            patch("sova.work.feed.emit_safe") as mock_emit,
             patch.object(monitor, "_notify") as mock_notify,
         ):
             await monitor._handle_timeout(entry)
@@ -699,7 +699,7 @@ class TestCheckMergeQueueMarkerFile:
                 new_callable=AsyncMock,
                 return_value=1,
             ) as mock_create,
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
         ):
             await _check_merge_queue_marker_file(agent, run_id=100)
 
@@ -793,7 +793,7 @@ class TestCheckMergeQueueOnFailure:
                 new_callable=AsyncMock,
                 return_value=1,
             ),
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
             patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
             patch(
                 "sova.utils.shell.run",
@@ -1333,7 +1333,7 @@ class TestCleanupErrorHandling:
             ),
             patch.object(monitor, "_transition_issue_state", new_callable=AsyncMock) as mock_transition,
             patch.object(monitor, "_cleanup_local_worktree", new_callable=AsyncMock),
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
             patch.object(monitor, "_notify"),
         ):
             await monitor._handle_merged(entry)
@@ -1369,7 +1369,7 @@ class TestCleanupErrorHandling:
                 side_effect=RuntimeError("transition failed"),
             ),
             patch.object(monitor, "_cleanup_local_worktree", new_callable=AsyncMock),
-            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch("sova.work.feed.emit_safe"),
             patch.object(monitor, "_notify"),
         ):
             await monitor._handle_merged(entry)

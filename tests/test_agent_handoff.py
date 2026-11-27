@@ -20,10 +20,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from structlog.testing import capture_logs
 
-from sova.dashboard.services.work_verdict import _NO_REVIEW, UNRESOLVED_KEY
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.ipc.handoff import DashboardHandoff, handoff_filename, write_handoff_file
+from sova.work.verdict import _NO_REVIEW, UNRESOLVED_KEY
 
 # agent_handoff.py imports `get_session` and `load_config` at module scope, so a test
 # patches them in its namespace ("sova.dashboard.services.agent_handoff.get_session"),
@@ -47,7 +47,7 @@ def _isolate_host_and_github() -> Iterator[None]:
     """
     with (
         patch("sova.dashboard.services.agent_handoff.check_memory_pressure", return_value=(None, None)),
-        patch("sova.dashboard.services.work_verdict.resolve_sova_verdict", return_value=dict(_NO_REVIEW)),
+        patch("sova.work.verdict.resolve_sova_verdict", return_value=dict(_NO_REVIEW)),
     ):
         yield
 
@@ -416,7 +416,7 @@ class TestAutoHandoffCircuitBreaker:
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
             patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value=verdict,
             ),
@@ -481,7 +481,7 @@ class TestAutoHandoffCircuitBreaker:
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
             patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={"has_sova_review": True, "verdict": "revise", "address_cycles": 1},
             ),
@@ -496,14 +496,14 @@ class TestAutoHandoffCircuitBreaker:
         from unittest.mock import AsyncMock, MagicMock
 
         from sova.dashboard.services.agent_handoff import _check_address_review_circuit_breaker
-        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY
+        from sova.work.verdict import UNRESOLVED_KEY
 
         mock_cfg = MagicMock()
         mock_cfg.pipeline.max_address_review_cycles = 3
         with (
             patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={**_NO_REVIEW, UNRESOLVED_KEY: True},
             ),
@@ -518,14 +518,14 @@ class TestAutoHandoffCircuitBreaker:
         from unittest.mock import AsyncMock, MagicMock
 
         from sova.dashboard.services.agent_handoff import _check_address_review_circuit_breaker
-        from sova.dashboard.services.work_verdict import TRUNCATED_KEY, UNRESOLVED_KEY
+        from sova.work.verdict import TRUNCATED_KEY, UNRESOLVED_KEY
 
         mock_cfg = MagicMock()
         mock_cfg.pipeline.max_address_review_cycles = 3
         with (
             patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={**_NO_REVIEW, UNRESOLVED_KEY: True, TRUNCATED_KEY: True},
             ),
@@ -971,7 +971,7 @@ class TestAutoHandoff:
 
         with (
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={"has_sova_review": True, "verdict": "approve"},
             ),
@@ -1017,7 +1017,7 @@ class TestAutoHandoff:
 
         with (
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={"has_sova_review": True, "verdict": "addressed"},
             ),
@@ -1025,7 +1025,7 @@ class TestAutoHandoff:
                 agent_lifecycle, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
             ) as mock_start,
             patch(
-                "sova.dashboard.services.work_verdict.load_config",
+                "sova.work.verdict.load_config",
                 return_value=MagicMock(pipeline=MagicMock(max_address_review_cycles=0)),
             ),
         ):
@@ -1286,7 +1286,7 @@ class TestFollowUpSlug:
                 AsyncMock(return_value=None),
             ),
             patch(
-                "sova.dashboard.services.work_verdict.resolve_verdict_for_pr",
+                "sova.work.verdict.resolve_verdict_for_pr",
                 AsyncMock(return_value={"has_sova_review": False}),
             ),
         ):

@@ -16,7 +16,7 @@ from sova.utils.shell import ShellResult
 def _silence_feed():
     # The tracker emits feed events on every transition; the import is lazy and
     # inside a try/except, but patching keeps the tests off the feed service.
-    with patch("sova.dashboard.services.feed_service.emit_safe"):
+    with patch("sova.work.feed.emit_safe"):
         yield
 
 
@@ -99,7 +99,7 @@ class TestEmitOnTransition:
         whichever transition landed within 60s of the other, leaving the feed
         showing a stale "lost" message after the tracker itself had already
         recovered."""
-        with patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit:
+        with patch("sova.work.feed.emit_safe") as mock_emit:
             tracker = ConnectivityTracker()
             tracker.record_failure("probe", decisive=True)
             tracker.record_success("github")
@@ -108,7 +108,7 @@ class TestEmitOnTransition:
         assert titles == ["Network connection lost", "Network connection restored"]
 
     def test_repeated_flaps_each_emit_their_own_transition(self) -> None:
-        with patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit:
+        with patch("sova.work.feed.emit_safe") as mock_emit:
             tracker = ConnectivityTracker()
             for _ in range(3):
                 tracker.record_failure("probe", decisive=True)

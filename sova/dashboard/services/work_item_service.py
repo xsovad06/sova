@@ -7,8 +7,8 @@ instead of computing actions independently.
 Priority cascade: running agent > PR state (SOVA-verdict adjusted) > GitHub label.
 
 Split into focused modules:
-- work_state.py:  state enum, constants, compute_work_item_state, actions, sort
-- work_verdict.py: verdict cache, verdict fetching, GitHub review parsing
+- sova/work/state.py:   state enum, constants, compute_work_item_state, actions, sort
+- sova/work/verdict.py: verdict cache, verdict fetching, GitHub review parsing
 """
 
 from __future__ import annotations
@@ -26,65 +26,7 @@ from typing import TYPE_CHECKING
 from sova.adapters.base import Task
 from sova.adapters.priority import Priority
 from sova.config.loader import load_config
-from sova.dashboard.services.pr_service import confirm_open_pr_numbers, known_open_pr_numbers
-from sova.dashboard.services.work_state import (
-    _AWAITING_APPROVAL as _AWAITING_APPROVAL,
-)
-from sova.dashboard.services.work_state import (
-    _LABEL_STATE_MAP as _LABEL_STATE_MAP,
-)
-from sova.dashboard.services.work_state import (
-    _SPEC_ACTION_IDS as _SPEC_ACTION_IDS,
-)
-from sova.dashboard.services.work_state import (
-    _STATE_SORT_ORDER as _STATE_SORT_ORDER,
-)
-from sova.dashboard.services.work_state import (
-    PRFacts as PRFacts,
-)
-from sova.dashboard.services.work_state import (
-    Resolution as Resolution,
-)
-from sova.dashboard.services.work_state import (  # re-export facade
-    WorkItemState as WorkItemState,
-)
-from sova.dashboard.services.work_state import (
-    _build_action as _build_action,
-)
-from sova.dashboard.services.work_state import (
-    _get_actions as _get_actions,
-)
-from sova.dashboard.services.work_state import (
-    _sort_items as _sort_items,
-)
-from sova.dashboard.services.work_state import (
-    compute_work_item_resolution as compute_work_item_resolution,
-)
-from sova.dashboard.services.work_state import (
-    compute_work_item_state as compute_work_item_state,
-)
-from sova.dashboard.services.work_state import (
-    describe_reason_chain as describe_reason_chain,
-)
-from sova.dashboard.services.work_state import (
-    resolve_next_action as resolve_next_action,
-)
-from sova.dashboard.services.work_state import run_action
-from sova.dashboard.services.work_state import (
-    state_color as state_color,
-)
-from sova.dashboard.services.work_state import (
-    state_label as state_label,
-)
-from sova.dashboard.services.work_verdict import (  # re-export facade
-    _fetch_sova_verdicts as _fetch_sova_verdicts,
-)
-from sova.dashboard.services.work_verdict import (
-    _sova_verdict_cache as _sova_verdict_cache,
-)
-from sova.dashboard.services.work_verdict import (
-    clear_verdict_cache as clear_verdict_cache,
-)
+from sova.core.state import TaskStatus
 from sova.git.pr import PROpenState, pr_open_state_from_list
 from sova.supervisor.suitability import (
     RankedTask,
@@ -95,6 +37,41 @@ from sova.supervisor.suitability import (
 )
 from sova.utils.log_dedup import warn_once
 from sova.utils.logging import get_logger
+from sova.work.pr_state import confirm_open_pr_numbers, known_open_pr_numbers
+from sova.work.state import (
+    PRFacts as PRFacts,
+)
+from sova.work.state import (
+    Resolution as Resolution,
+)
+from sova.work.state import (  # re-export facade
+    WorkItemState as WorkItemState,
+)
+from sova.work.state import build_action, get_actions, run_action, sort_items
+from sova.work.state import (
+    compute_work_item_resolution as compute_work_item_resolution,
+)
+from sova.work.state import (
+    compute_work_item_state as compute_work_item_state,
+)
+from sova.work.state import (
+    describe_reason_chain as describe_reason_chain,
+)
+from sova.work.state import (
+    resolve_next_action as resolve_next_action,
+)
+from sova.work.state import (
+    state_color as state_color,
+)
+from sova.work.state import (
+    state_label as state_label,
+)
+from sova.work.verdict import (
+    clear_verdict_cache as clear_verdict_cache,
+)
+from sova.work.verdict import (  # re-export facade
+    fetch_sova_verdicts as fetch_sova_verdicts,
+)
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
@@ -581,11 +558,11 @@ def _resolve_spec_review_override(
     pr_number: str | None,
 ) -> tuple[WorkItemState, dict, list, list]:
     """Override to SPEC_REVIEW when a spec run awaits approval; otherwise resolve normal actions."""
-    if running or pr_data is not None or not last_run or last_run_status != _AWAITING_APPROVAL:
-        primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr_number)
+    if running or pr_data is not None or not last_run or last_run_status != TaskStatus.AWAITING_APPROVAL:
+        primary, secondary = get_actions(state, issue_number=issue_num, pr_number=pr_number)
         return state, primary, secondary, []
 
-    primary = _build_action(
+    primary = build_action(
         "resume-approval",
         "Approve & Resume",
         "success",
@@ -730,7 +707,7 @@ def _build_pr_item(
     state = resolution.state
     reason_chain = _reason_chain_payload(resolution, facts)
     matched_reason = reason_chain[-1] if reason_chain else ""
-    primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr["number"])
+    primary, secondary = get_actions(state, issue_number=issue_num, pr_number=pr["number"])
     primary, secondary = _drop_integrate_while_bot_rereview(primary, secondary, facts)
     _attach_merge_blockers(primary, secondary, resolution, facts)
 
@@ -867,7 +844,7 @@ def _attach_merge_blockers(
     """Attach merge_blockers to every Integrate action for the confirm-before-proceeding UX.
 
     The "primary Integrate never prompts" guarantee is structural, not incidental to
-    which slot _get_actions() happens to put "integrate" in: it is keyed off
+    which slot get_actions() happens to put "integrate" in: it is keyed off
     resolution.action_id == "integrate", the exact condition under which
     resolve_next_action() assigns Integrate as the state's one primary action
     (PR_READY_TO_MERGE once merge conditions are satisfied, PR_REVIEW_EXHAUSTED once
@@ -940,7 +917,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     prs_by_issue = _index_prs_by_issue(prs)
 
     unlinked_prs = [pr for pr in prs if not pr.get("linked_issue")]
-    verdicts_by_issue = await _fetch_sova_verdicts(prs_by_issue, unlinked_prs=unlinked_prs, project_dir=project_dir)
+    verdicts_by_issue = await fetch_sova_verdicts(prs_by_issue, unlinked_prs=unlinked_prs, project_dir=project_dir)
 
     linked_issue_numbers: set[str] = set()
 
@@ -980,7 +957,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         jira_tickets=jira_tickets,
     )
 
-    _sort_items(items)
+    sort_items(items)
 
     running_count = sum(1 for i in items if i["state"] == WorkItemState.AGENT_RUNNING)
     max_concurrent, agents_running = _pool_limit_and_running(

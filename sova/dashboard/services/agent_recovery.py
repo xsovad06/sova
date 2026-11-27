@@ -687,7 +687,7 @@ _STATE_READ_RETRY_DELAY_S = 1.0
 def _emit_rollback_stranded_event(run_id: int, issue_number: str, reason: str) -> None:
     """Surface an issue left in progress with no agent, with the *reason* the rollback left it (non-fatal)."""
     try:
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         emit_safe(
             f"#{issue_number} may be stuck in progress",
@@ -921,7 +921,7 @@ def _summarize_ci_checks(checks: list | None) -> str:
     MonitorCIStep's (e.g. both must treat ACTION_REQUIRED and TIMED_OUT as
     blocking). A check that completed with neither a pass nor a blocking
     failure (NEUTRAL/SKIPPED) falls through to "passed", matching how
-    pr_service.py and pr_status.py classify those same conclusions as
+    work/pr_state.py and pr_status.py classify those same conclusions as
     non-blocking. A CANCELLED conclusion is the exception: it is the normal
     effect of a superseding push, so a set with no passing check at all and
     at least one CANCELLED is reported as "failed", mirroring
@@ -986,7 +986,7 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
             # An empty check list is ambiguous between "no CI configured"
             # and "checks have not registered yet" (see get_ci_checks()'s
             # docstring). Corroborate with a workflow-run lookup before
-            # letting the merge gate in work_state.py treat "none" as
+            # letting the merge gate in work/state.py treat "none" as
             # satisfied: a run with no checks yet means "pending", and an
             # unreadable lookup means "unknown", not a confirmed absence.
             from sova.git.operations import get_pr_head_sha, sha_has_workflow_runs
@@ -1004,7 +1004,7 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
     from types import SimpleNamespace
 
     from sova.config.context import get_project_dir as _get_project_dir
-    from sova.dashboard.services.work_verdict import resolve_sova_verdict
+    from sova.work.verdict import resolve_sova_verdict
 
     sova_review = await resolve_sova_verdict(
         issue_number,
@@ -1512,7 +1512,7 @@ async def _resume_one(candidate: dict, project_dir: Path | None) -> list[dict]:
 
 def _emit_self_heal_event(candidate: dict) -> None:
     try:
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.work.feed import FeedEventSeverity, emit_safe
 
         skipped = f" Skipping {candidate['steps_done']} completed step(s)." if candidate["steps_done"] else ""
         emit_safe(

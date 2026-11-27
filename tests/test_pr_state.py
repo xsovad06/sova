@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from structlog.testing import capture_logs
 
-from sova.dashboard.services.pr_service import (
+from sova.ipc.handoff import DashboardHandoff
+from sova.work.pr_state import (
     ComputedPRState,
     _age_seconds,
     _count_pr_commits,
@@ -32,7 +33,6 @@ from sova.dashboard.services.pr_service import (
     parse_linked_issue,
     resolve_head_verdict,
 )
-from sova.ipc.handoff import DashboardHandoff
 
 
 def _state(**kwargs: object) -> str:
@@ -1595,7 +1595,7 @@ class TestPrimaryClosingReference:
 
     def test_disagreement_is_logged(self) -> None:
         raw = self._raw(body="## Issue\n\nCloses #1354")
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             _extract_linked_issue(raw)
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args.args[0] == "pr_service.multiple_closing_references"
@@ -1605,7 +1605,7 @@ class TestPrimaryClosingReference:
 
     def test_single_override_logs_one_warning_and_drops_the_foreign_reference(self) -> None:
         raw = self._raw(body="## Issue\n\nPart of #1213", branch="feat/issue-1213", numbers=(42,))
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             assert _extract_all_linked_issues(raw) == [1213]
             assert _extract_all_linked_issues(raw) == [1213]
         mock_log.warning.assert_called_once()
@@ -1638,7 +1638,7 @@ class TestPrimaryClosingReference:
     def test_changed_decision_on_same_head_is_logged_again(self) -> None:
         stacked = self._raw(body="## Issue\n\nCloses #12", branch="feat/issue-5", numbers=(12,))
         edited = self._raw(body="## Issue\n\nPart of #5", branch="feat/issue-5", numbers=(12,))
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             _extract_all_linked_issues(stacked)
             _extract_all_linked_issues(edited)
         mock_log.info.assert_called_once()
@@ -1647,7 +1647,7 @@ class TestPrimaryClosingReference:
 
     def test_single_stacked_reference_logs_a_branch_mismatch_at_info(self) -> None:
         raw = self._raw(body="## Issue\n\nCloses #12", branch="feat/issue-5", numbers=(12,))
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             assert _extract_all_linked_issues(raw) == [12]
             assert _extract_all_linked_issues(raw) == [12]
         mock_log.warning.assert_not_called()
@@ -1658,7 +1658,7 @@ class TestPrimaryClosingReference:
 
     def test_multi_reference_stacked_pr_logs_at_info_not_warning(self) -> None:
         raw = self._raw(body="## Issue\n\nCloses #12", branch="feat/issue-5", numbers=(12, 1354))
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             assert _extract_linked_issue(raw) == 12
         mock_log.warning.assert_not_called()
         mock_log.info.assert_called_once()
@@ -1668,14 +1668,14 @@ class TestPrimaryClosingReference:
     @pytest.mark.parametrize("branch", ["feat/issue-12", ""])
     def test_single_reference_without_disagreement_logs_nothing(self, branch: str) -> None:
         raw = self._raw(body="## Issue\n\nCloses #12", branch=branch, numbers=(12,))
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             assert _extract_all_linked_issues(raw) == [12]
         mock_log.warning.assert_not_called()
         mock_log.info.assert_not_called()
 
     def test_untied_choice_is_logged(self) -> None:
         raw = self._raw()
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             assert _extract_linked_issue(raw) == 12
         mock_log.info.assert_called_once()
         assert mock_log.info.call_args.kwargs["signal"] == "none"
@@ -1683,7 +1683,7 @@ class TestPrimaryClosingReference:
 
     def test_primary_listed_first_still_logs_the_extra_closing_reference(self) -> None:
         raw = self._raw(body="## Issue\n\nCloses #1340", branch="fix/issue-1340", numbers=(1340, 12))
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             assert _extract_linked_issue(raw) == 1340
         mock_log.info.assert_called_once()
         assert mock_log.info.call_args.args[0] == "pr_service.multiple_closing_references"
@@ -1692,7 +1692,7 @@ class TestPrimaryClosingReference:
 
     def test_repeated_resolution_of_the_same_pr_head_logs_once(self) -> None:
         raw = {**self._raw(body="## Issue\n\nCloses #1354"), "headRefOid": "abc"}
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             _extract_linked_issue(raw)
             _extract_all_linked_issues(raw)
             _extract_linked_issue(raw)
@@ -1700,7 +1700,7 @@ class TestPrimaryClosingReference:
 
     def test_new_head_sha_logs_again(self) -> None:
         raw = self._raw(body="## Issue\n\nCloses #1354")
-        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+        with patch("sova.work.pr_state.log") as mock_log:
             _extract_linked_issue({**raw, "headRefOid": "abc"})
             _extract_linked_issue({**raw, "headRefOid": "def"})
         assert mock_log.warning.call_count == 2
@@ -1805,7 +1805,7 @@ class TestListOpenPrsWithState:
             seen_dirs.append(project_dir)
             raise RuntimeError("config error")
 
-        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", _raise_config)
+        monkeypatch.setattr("sova.work.pr_state.load_config", _raise_config)
         result = await list_open_prs_with_state()
         assert result == []
         assert seen_dirs == [tmp_path]
@@ -1819,7 +1819,7 @@ class TestListOpenPrsWithState:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = ""
         load_config = MagicMock(return_value=mock_cfg)
-        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", load_config)
+        monkeypatch.setattr("sova.work.pr_state.load_config", load_config)
         result = await list_open_prs_with_state()
         assert result == []
         load_config.assert_called_once_with(tmp_path)
@@ -1833,7 +1833,7 @@ class TestListOpenPrsWithState:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"
-        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.work.pr_state.load_config", lambda _: mock_cfg)
 
         raw_prs = [{"number": 10, "title": "Test"}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
@@ -1842,7 +1842,7 @@ class TestListOpenPrsWithState:
             AsyncMock(side_effect=RuntimeError("thread count error")),
         )
         monkeypatch.setattr(
-            "sova.dashboard.services.pr_service._enrich_pr",
+            "sova.work.pr_state._enrich_pr",
             lambda pr, now: {**pr, "computed_state": "test"},
         )
 
@@ -1857,13 +1857,13 @@ class TestListOpenPrsWithState:
 
         monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = MagicMock(github_repo="owner/verdict-wiring", github_user="sova-bot")
-        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.work.pr_state.load_config", lambda _: mock_cfg)
         write_handoff_file(tmp_path, _handoff("revise", _HEAD, pr=10))
         raw_prs = [{"number": 10, "headRefOid": _HEAD}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", AsyncMock(return_value={10: _review_data([])}))
         monkeypatch.setattr(
-            "sova.dashboard.services.pr_service._enrich_pr",
+            "sova.work.pr_state._enrich_pr",
             lambda pr, now: {**pr, "computed_state": "test"},
         )
 
@@ -1880,13 +1880,13 @@ class TestListOpenPrsWithState:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"
-        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.work.pr_state.load_config", lambda _: mock_cfg)
 
         raw_prs = [{"number": 10}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", AsyncMock(return_value={}))
         monkeypatch.setattr(
-            "sova.dashboard.services.pr_service._enrich_pr",
+            "sova.work.pr_state._enrich_pr",
             lambda pr, now: {**pr, "computed_state": "test"},
         )
 
@@ -1894,7 +1894,7 @@ class TestListOpenPrsWithState:
         async def mock_record(prs, *, repo, project_dir) -> None:
             pass
 
-        monkeypatch.setattr("sova.dashboard.services.pr_service._record_state_transitions", mock_record)
+        monkeypatch.setattr("sova.work.pr_state._record_state_transitions", mock_record)
 
         # Should not raise
         result = await list_open_prs_with_state()
@@ -1907,32 +1907,32 @@ class TestRecordStateTransitions:
     @pytest.mark.asyncio
     async def test_skips_prs_with_no_previous_state(self, monkeypatch, tmp_path: Path) -> None:
         """Test lines 523-524: early continue when prev is None."""
-        from sova.dashboard.services import pr_service
-        from sova.dashboard.services.pr_service import _record_state_transitions
+        from sova.work import pr_state
+        from sova.work.pr_state import _record_state_transitions
 
         # Clear any previous state
-        pr_service._last_known_states.clear()
+        pr_state._last_known_states.clear()
 
         prs = [{"number": 10, "computed_state": "approved"}]
         sessions = AsyncMock()
-        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", sessions)
+        monkeypatch.setattr("sova.work.pr_state.get_session", sessions)
         await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
 
         sessions.assert_not_called()
-        assert pr_service._last_known_states[10] == "approved"
+        assert pr_state._last_known_states[10] == "approved"
 
     @pytest.mark.asyncio
     async def test_skips_prs_with_same_state(self, monkeypatch, tmp_path: Path) -> None:
         """Test lines 525-526: early continue when state == prev."""
-        from sova.dashboard.services import pr_service
-        from sova.dashboard.services.pr_service import _record_state_transitions
+        from sova.work import pr_state
+        from sova.work.pr_state import _record_state_transitions
 
         # Set previous state
-        pr_service._last_known_states[10] = "approved"
+        pr_state._last_known_states[10] = "approved"
 
         prs = [{"number": 10, "computed_state": "approved", "updated_at": "2026-08-01T12:00:00Z"}]
         sessions = AsyncMock()
-        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", sessions)
+        monkeypatch.setattr("sova.work.pr_state.get_session", sessions)
         await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
 
         sessions.assert_not_called()
@@ -1940,25 +1940,25 @@ class TestRecordStateTransitions:
     @pytest.mark.asyncio
     async def test_skips_state_with_no_event_mapping(self, monkeypatch, tmp_path: Path) -> None:
         """Test lines 528-530: early continue when state has no event type mapping."""
-        from sova.dashboard.services import pr_service
-        from sova.dashboard.services.pr_service import _record_state_transitions
+        from sova.work import pr_state
+        from sova.work.pr_state import _record_state_transitions
 
         # Set previous state
-        pr_service._last_known_states[10] = "some_old_state"
+        pr_state._last_known_states[10] = "some_old_state"
 
         prs = [{"number": 10, "computed_state": "unknown_state", "updated_at": "2026-08-01T12:00:00Z"}]
         sessions = AsyncMock()
-        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", sessions)
+        monkeypatch.setattr("sova.work.pr_state.get_session", sessions)
         await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
 
         sessions.assert_not_called()
-        assert pr_service._last_known_states[10] == "unknown_state"
+        assert pr_state._last_known_states[10] == "unknown_state"
 
     @pytest.mark.asyncio
     async def test_handles_event_write_exception_gracefully(self, monkeypatch, tmp_path) -> None:
         """Test lines 555-556: individual event write exception is logged but doesn't fail."""
-        from sova.dashboard.services import pr_service
-        from sova.dashboard.services.pr_service import _record_state_transitions
+        from sova.work import pr_state
+        from sova.work.pr_state import _record_state_transitions
 
         # Mock get_session to raise on commit
         async def mock_session(*args, **kwargs):
@@ -1977,10 +1977,10 @@ class TestRecordStateTransitions:
 
             return MockSession()
 
-        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", mock_session)
+        monkeypatch.setattr("sova.work.pr_state.get_session", mock_session)
 
         # Set previous state so transition happens
-        pr_service._last_known_states[10] = "draft"
+        pr_state._last_known_states[10] = "draft"
 
         prs = [
             {
@@ -1999,15 +1999,15 @@ class TestRecordStateTransitions:
     @pytest.mark.asyncio
     async def test_handles_session_exception_gracefully(self, monkeypatch, tmp_path) -> None:
         """Test outer exception handler catches session errors."""
-        from sova.dashboard.services import pr_service
-        from sova.dashboard.services.pr_service import _record_state_transitions
+        from sova.work import pr_state
+        from sova.work.pr_state import _record_state_transitions
 
         async def _raise_session(*args, **kwargs):
             raise RuntimeError("session error")
 
-        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", _raise_session)
+        monkeypatch.setattr("sova.work.pr_state.get_session", _raise_session)
 
-        pr_service._last_known_states[10] = "draft"
+        pr_state._last_known_states[10] = "draft"
         prs = [{"number": 10, "computed_state": "approved_ci_green", "updated_at": "2026-08-01T12:00:00Z"}]
 
         with capture_logs() as logs:
@@ -2018,44 +2018,44 @@ class TestRecordStateTransitions:
 
 class TestInvalidatePrCache:
     def setup_method(self) -> None:
-        from sova.dashboard.services import pr_service
+        from sova.work import pr_state
 
-        pr_service._pr_cache.clear()
-        pr_service._pr_cache_generation.clear()
+        pr_state._pr_cache.clear()
+        pr_state._pr_cache_generation.clear()
 
     def teardown_method(self) -> None:
-        from sova.dashboard.services import pr_service
+        from sova.work import pr_state
 
-        pr_service._pr_cache.clear()
-        pr_service._pr_cache_generation.clear()
+        pr_state._pr_cache.clear()
+        pr_state._pr_cache_generation.clear()
 
     def test_drops_every_user_entry_for_the_repo(self) -> None:
-        from sova.dashboard.services import pr_service
+        from sova.work import pr_state
 
-        pr_service._pr_cache[("owner/repo", "alice")] = (time.monotonic(), [])
-        pr_service._pr_cache[("owner/repo", "bob")] = (time.monotonic(), [])
+        pr_state._pr_cache[("owner/repo", "alice")] = (time.monotonic(), [])
+        pr_state._pr_cache[("owner/repo", "bob")] = (time.monotonic(), [])
 
-        pr_service.invalidate_pr_cache("owner/repo")
+        pr_state.invalidate_pr_cache("owner/repo")
 
-        assert pr_service._pr_cache == {}
+        assert pr_state._pr_cache == {}
 
     def test_keeps_other_repos(self) -> None:
-        from sova.dashboard.services import pr_service
+        from sova.work import pr_state
 
-        pr_service._pr_cache[("owner/other", "alice")] = (time.monotonic(), [])
+        pr_state._pr_cache[("owner/other", "alice")] = (time.monotonic(), [])
 
-        pr_service.invalidate_pr_cache("owner/repo")
+        pr_state.invalidate_pr_cache("owner/repo")
 
-        assert ("owner/other", "alice") in pr_service._pr_cache
+        assert ("owner/other", "alice") in pr_state._pr_cache
 
     def test_bumps_generation_for_dropped_entries(self) -> None:
-        from sova.dashboard.services import pr_service
+        from sova.work import pr_state
 
-        pr_service._pr_cache[("owner/repo", "alice")] = (time.monotonic(), [])
+        pr_state._pr_cache[("owner/repo", "alice")] = (time.monotonic(), [])
 
-        pr_service.invalidate_pr_cache("owner/repo")
+        pr_state.invalidate_pr_cache("owner/repo")
 
-        assert pr_service._pr_cache_generation[("owner/repo", "alice")] == 1
+        assert pr_state._pr_cache_generation[("owner/repo", "alice")] == 1
 
     @pytest.mark.asyncio
     async def test_in_flight_fetch_does_not_resurrect_stale_entry_after_invalidation(
@@ -2064,36 +2064,36 @@ class TestInvalidatePrCache:
         """A fetch started before invalidation must not repopulate the cache once it lands."""
         from unittest.mock import MagicMock
 
-        from sova.dashboard.services import pr_service
+        from sova.work import pr_state
 
         monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"
-        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.work.pr_state.load_config", lambda _: mock_cfg)
 
         async def _slow_list_open_prs(*_args: object, **_kwargs: object) -> list:
             # Invalidate mid-fetch, simulating an agent finishing while this
             # repo's PR list is already being refetched for another request.
-            pr_service.invalidate_pr_cache("owner/repo")
+            pr_state.invalidate_pr_cache("owner/repo")
             return [{"number": 10}]
 
         monkeypatch.setattr("sova.git.pr.list_open_prs", _slow_list_open_prs)
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", AsyncMock(return_value={}))
         monkeypatch.setattr(
-            "sova.dashboard.services.pr_service._enrich_pr",
+            "sova.work.pr_state._enrich_pr",
             lambda pr, now: {**pr, "computed_state": "test"},
         )
 
         async def mock_record(prs, *, repo, project_dir) -> None:
             pass
 
-        monkeypatch.setattr("sova.dashboard.services.pr_service._record_state_transitions", mock_record)
+        monkeypatch.setattr("sova.work.pr_state._record_state_transitions", mock_record)
 
-        await pr_service.list_open_prs_with_state()
+        await pr_state.list_open_prs_with_state()
         # The invalidation fired after the fetch had already started, so the
         # result must not have been cached.
-        assert ("owner/repo", "testuser") not in pr_service._pr_cache
+        assert ("owner/repo", "testuser") not in pr_state._pr_cache
 
 
 _HEAD = "a" * 40

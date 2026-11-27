@@ -19,9 +19,9 @@ from sova.dashboard.services import snapshot_service, work_history_service, work
 from sova.dashboard.services.run_outcome import run_outcome
 from sova.dashboard.services.work_history_service import attach_titles, get_grouped_history
 from sova.dashboard.services.work_service import get_work_history
-from sova.dashboard.services.work_state import RUN_ACTIONS, run_action
 from sova.db.models import StepExecution, TaskRun
 from sova.db.session import get_session
+from sova.work.state import RUN_ACTIONS, run_action
 
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 

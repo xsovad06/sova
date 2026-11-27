@@ -59,7 +59,11 @@ from sova.dashboard.services.work_history_service import (
     unsettled_keys,
 )
 from sova.dashboard.services.work_service import as_utc
-from sova.dashboard.services.work_state import (
+from sova.db.models import FeedEventRecord, TaskRun
+from sova.db.session import get_session
+from sova.utils.formatting import iso_utc
+from sova.utils.logging import get_logger
+from sova.work.state import (
     HistoryState,
     WorkItemState,
     history_state_color,
@@ -67,10 +71,6 @@ from sova.dashboard.services.work_state import (
     state_color,
     state_label,
 )
-from sova.db.models import FeedEventRecord, TaskRun
-from sova.db.session import get_session
-from sova.utils.formatting import iso_utc
-from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.feed_activity")
 

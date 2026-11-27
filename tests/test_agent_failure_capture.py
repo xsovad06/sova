@@ -222,22 +222,22 @@ class TestEmitFinalizeEventSeverity:
         return captured["severity"]
 
     def test_failed_is_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from sova.dashboard.services.feed_service import FeedEventSeverity
+        from sova.work.feed import FeedEventSeverity
 
         assert self._capture_severity(monkeypatch, "failed") == FeedEventSeverity.error
 
     def test_interrupted_is_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from sova.dashboard.services.feed_service import FeedEventSeverity
+        from sova.work.feed import FeedEventSeverity
 
         assert self._capture_severity(monkeypatch, "interrupted") == FeedEventSeverity.error
 
     def test_stopped_is_warning_not_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from sova.dashboard.services.feed_service import FeedEventSeverity
+        from sova.work.feed import FeedEventSeverity
 
         assert self._capture_severity(monkeypatch, "stopped") == FeedEventSeverity.warning
 
     def test_done_is_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from sova.dashboard.services.feed_service import FeedEventSeverity
+        from sova.work.feed import FeedEventSeverity
 
         assert self._capture_severity(monkeypatch, "done") == FeedEventSeverity.success
 

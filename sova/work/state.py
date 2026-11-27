@@ -114,7 +114,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.HUMAN_ONLY: "gray-dim",
 }
 
-# ComputedPRState values (pr_service.compute_pr_state) and the dependency graph's collapsed
+# ComputedPRState values (pr_state.compute_pr_state) and the dependency graph's collapsed
 # pr_state strings, which are a subset of them. Each is the WorkItemState that names the same
 # condition, and its label and color are read from that member, so a PR row and the task card
 # showing that PR cannot disagree on either. "approved" (approved, CI not green yet) names no
@@ -340,7 +340,6 @@ def history_state_color(state: HistoryState) -> str:
 
 
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
-_AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
 
 
 @dataclass(frozen=True)
@@ -453,7 +452,7 @@ _LABEL_STATE_MAP: dict[str, WorkItemState] = {
 }
 
 
-def _build_action(
+def build_action(
     action_id: str,
     label: str,
     style: str,
@@ -471,7 +470,7 @@ def _build_action(
 
 def retry_rebase_action(issue_number: int | str) -> dict:
     """The action that starts the auto-rebase of *issue_number*'s PR again (a fix for a transient failure)."""
-    return _build_action("rebase", "Retry rebase", "warning", "trigger_rebase", {"issue": str(issue_number)})
+    return build_action("rebase", "Retry rebase", "warning", "trigger_rebase", {"issue": str(issue_number)})
 
 
 def address_pr_action(issue_number: int | str | None, pr_number: int) -> dict:
@@ -479,10 +478,10 @@ def address_pr_action(issue_number: int | str | None, pr_number: int) -> dict:
     args: dict = {"command": "address-pr", "pr": pr_number}
     if issue_number:
         args["issue"] = str(issue_number)
-    return _build_action("address_pr", "Address PR", "warning", "run_command", args)
+    return build_action("address_pr", "Address PR", "warning", "run_command", args)
 
 
-def _get_actions(
+def get_actions(
     state: WorkItemState,
     *,
     issue_number: str | None,
@@ -498,7 +497,7 @@ def _get_actions(
             args["issue"] = i
         if p:
             args["pr"] = p
-        return _build_action(aid, label, style, "start_agent", args)
+        return build_action(aid, label, style, "start_agent", args)
 
     def cmd(aid: str, label: str, style: str, command: str, *, pr_only: bool = False) -> dict:
         args: dict = {"command": command}
@@ -506,7 +505,7 @@ def _get_actions(
             args["issue"] = i
         if p:
             args["pr"] = p
-        return _build_action(aid, label, style, "run_command", args)
+        return build_action(aid, label, style, "run_command", args)
 
     S = WorkItemState
     review = cmd("review_pr", "Review PR", "neutral", "review-pr")
@@ -516,7 +515,7 @@ def _get_actions(
     def rebase() -> dict | None:
         if not i:
             return None
-        return _build_action("rebase", "Rebase", "danger", "trigger_rebase", {"issue": i})
+        return build_action("rebase", "Rebase", "danger", "trigger_rebase", {"issue": i})
 
     actions: dict[WorkItemState, tuple[dict | None, list[dict]]] = {
         S.BACKLOG: (agent("triage", "Triage", "warning", "triage"), []),
@@ -559,7 +558,7 @@ _START_STATES = frozenset(
 def start_action(state: str, issue_number: int | str | None) -> dict | None:
     """The agent run that moves an issue in *state* on, as a ``start_agent`` action, or None when no run does.
 
-    The same action ``_get_actions()`` gives the state, so a card's Start button runs the agent the issue's stage
+    The same action ``get_actions()`` gives the state, so a card's Start button runs the agent the issue's stage
     calls for (Research on a triaged issue) instead of always a developer. None for a state with a PR, a parked
     one (needs_spec), a human-only or a done issue, and an unknown state.
     """
@@ -569,7 +568,7 @@ def start_action(state: str, issue_number: int | str | None) -> dict | None:
         return None
     if item_state not in _START_STATES:
         return None
-    primary, _ = _get_actions(item_state, issue_number=str(issue_number) if issue_number else None, pr_number=None)
+    primary, _ = get_actions(item_state, issue_number=str(issue_number) if issue_number else None, pr_number=None)
     return primary if primary and primary.get("handler") == "start_agent" else None
 
 
@@ -873,7 +872,7 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
         # the supervisor spawn a reviewer on every poll cycle for a PR no
         # review can unblock; None routes it to CHECKPOINT_NEEDED for a human
         # instead. The dashboard is unaffected: its buttons come from
-        # _get_actions(state), not from action_id.
+        # get_actions(state), not from action_id.
         return resolved(WorkItemState.PR_AWAITING_REVIEW, None)
 
     chain.append("ready_to_merge")
@@ -1061,10 +1060,10 @@ def describe_reason_chain(reason_chain: tuple[str, ...], facts: PRFacts) -> list
 def _thread_signal(pr_data: dict) -> str:
     """Classify review thread resolution as clear/pending/unknown (#989).
 
-    Lazy import avoids pulling pr_service's git/asyncio dependencies into this
+    Lazy import avoids pulling pr_state's git/asyncio dependencies into this
     pure-logic module at import time.
     """
-    from sova.dashboard.services.pr_service import get_unresolved_thread_count
+    from sova.work.pr_state import get_unresolved_thread_count
 
     unresolved = get_unresolved_thread_count(pr_data)
     if unresolved is None:
@@ -1072,7 +1071,7 @@ def _thread_signal(pr_data: dict) -> str:
     return "pending" if unresolved > 0 else "clear"
 
 
-def _build_pr_facts(
+def build_pr_facts(
     pr_data: dict,
     sova_verdict: dict | None,
     *,
@@ -1080,7 +1079,7 @@ def _build_pr_facts(
     max_address_cycles: int = 0,
 ) -> PRFacts:
     """Translate raw pr_data/sova_verdict dicts into a PRFacts snapshot."""
-    from sova.dashboard.services.work_verdict import TRUNCATED_KEY, UNRESOLVED_KEY
+    from sova.work.verdict import TRUNCATED_KEY, UNRESOLVED_KEY
 
     verdict = sova_verdict or {}
     has_review = verdict.get("has_sova_review", False)
@@ -1147,7 +1146,7 @@ def compute_work_item_resolution(
     does not offer review actions on a PR that is gone.
     """
     if running_agent is not None or pr_data is not None:
-        facts = _build_pr_facts(
+        facts = build_pr_facts(
             pr_data or {},
             sova_verdict,
             external_reviews_enabled=external_reviews_enabled,
@@ -1205,7 +1204,7 @@ _STATE_SORT_ORDER: dict[str, int] = {
 }
 
 
-def _sort_items(items: list[dict]) -> None:
+def sort_items(items: list[dict]) -> None:
     """Sort: running first, then handoff pending, then by priority."""
     items.sort(
         key=lambda i: (

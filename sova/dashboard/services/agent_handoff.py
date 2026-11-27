@@ -8,9 +8,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.loader import load_config
 from sova.dashboard.services.agent_validation import check_memory_pressure
-from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
+from sova.work.feed import FeedEventSeverity, emit_safe
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,7 +51,7 @@ async def _check_address_review_circuit_breaker(
     if role != "developer" or pr_number is None:
         return None
 
-    from sova.dashboard.services.work_verdict import (
+    from sova.work.verdict import (
         TRUNCATED_KEY,
         UNRESOLVED_KEY,
         invalidate_verdict,
@@ -273,7 +273,7 @@ async def _review_already_done(action: HandoffAction, agent: AgentState, target_
     if action.id not in {"review", "review_pr"} or pr_num is None:
         return False
 
-    from sova.dashboard.services.work_verdict import resolve_verdict_for_pr
+    from sova.work.verdict import resolve_verdict_for_pr
 
     verdict = await resolve_verdict_for_pr(target_issue, pr_number=pr_num, project_dir=agent.project_dir)
     if verdict.get("has_sova_review") and verdict.get("verdict") != "addressed":

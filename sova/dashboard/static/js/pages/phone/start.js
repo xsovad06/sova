@@ -1,6 +1,6 @@
 // Phone page, starting a run: the Work page's own issue search (work/search.js, GET /work/search) finds any open
 // issue by its number or words of its title, and choosing one starts the agent its state calls for. That is the
-// `start` action the server attaches to every result (work_state.start_action(): the researcher on a triaged issue,
+// `start` action the server attaches to every result (sova.work.state.start_action(): the researcher on a triaged issue,
 // the developer on a researched one), sent through the Work page's own start (work/actions.js startOrQueue(), which
 // queues the issue when no slot is free). The server's refusal (unsuitable, duplicate, over budget) is shown as it is.
 //

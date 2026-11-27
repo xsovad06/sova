@@ -1222,7 +1222,7 @@ class TestGetPrStatusForIssue:
                 side_effect=RuntimeError("ci api error"),
             ),
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
             ),
@@ -1286,7 +1286,7 @@ class TestGetPrStatusForIssue:
                 return_value=True,
             ) as mock_runs,
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
             ),
@@ -1344,7 +1344,7 @@ class TestGetPrStatusForIssue:
                 return_value=False,
             ),
             patch(
-                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                "sova.work.verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
             ),

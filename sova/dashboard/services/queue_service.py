@@ -14,10 +14,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters.base import Task, TaskState
 from sova.adapters.milestone import extract_phase_order
 from sova.config.loader import load_config
-from sova.dashboard.services.work_state import state_color, state_label
 from sova.db.session import get_session
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
+from sova.work.state import state_color, state_label
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
@@ -382,7 +382,7 @@ async def _drop_closed_pr_numbers(
     if not any(candidates_by_issue.values()):
         return
 
-    from sova.dashboard.services.pr_service import confirm_open_pr_numbers, known_open_pr_numbers
+    from sova.work.pr_state import confirm_open_pr_numbers, known_open_pr_numbers
 
     if cfg is None:
         try:
