@@ -17,7 +17,7 @@ Run `sova --help` for the full list.
 
 ## Registering the MCP Server in Claude Code
 
-Bind the server to one project so every tool acts on it, then allow the two read-only operator tools and leave the rest on ask, so each start, stop or approval shows Claude Code's permission prompt:
+Bind the server to one project so every tool acts on it, then allow the three read-only operator tools and leave the rest on ask, so each start, stop or approval shows Claude Code's permission prompt:
 
 ```bash
 claude mcp add sova -- sova mcp serve --project /path/to/project
@@ -28,9 +28,9 @@ Put this in `.claude/settings.json` (project) or `~/.claude/settings.json` (user
 ```json
 {
   "permissions": {
-    "allow": ["mcp__sova__sova_status", "mcp__sova__sova_pending"]
+    "allow": ["mcp__sova__sova_status", "mcp__sova__sova_pending", "mcp__sova__sova_explain_issue"]
   }
 }
 ```
 
-The operator tools call the running `sova server` (or `sova dashboard`) over loopback at the configured `server.host` and `server.port`, then `dashboard.port`, so they go through the same duplicate, budget and suitability checks as the dashboard. A server started with `--port` on a port the config does not name is not found. Each call first asks the endpoint which project it serves, so a `sova server` started before this version existed (no identity route) must be restarted on the same SOVA version before the operator tools will act on it; an endpoint that is not a SOVA dashboard, or serves another project, is skipped in favor of the next configured port. That permission prompt is the human confirmation: tracker text the session reads (issue titles, handoff summaries) can carry instructions, and the tools never accept a force or budget override.
+The operator tools call the running `sova server` (or `sova dashboard`) over loopback at the configured `server.host` and `server.port`, then `dashboard.port`, so they go through the same duplicate, budget and suitability checks as the dashboard. A server started with `--port` on a port the config does not name is not found. Each call first asks the endpoint which project it serves, so a `sova server` started before this version existed (no identity route) must be restarted on the same SOVA version before the operator tools will act on it; an endpoint that is not a SOVA dashboard, or serves another project, is skipped in favor of the next configured port. That permission prompt is the human confirmation: tracker text the session reads (issue titles, handoff summaries) can carry instructions, and the tools never accept a force or budget override. `sova mcp serve --read-only` registers only those three read tools (the server the dashboard's conversation tabs give each turn).

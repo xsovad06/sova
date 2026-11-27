@@ -12,6 +12,9 @@ from urllib.parse import urlparse
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# The Claude CLI's moving aliases; a setting that must name a pinned model rejects them.
+_BARE_CLAUDE_ALIASES = frozenset({"opus", "sonnet", "haiku"})
+
 _VALID_TASK_STATES = frozenset(
     {
         "backlog",
@@ -1104,6 +1107,26 @@ class FeedConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_FEED_")
 
 
+class ConversationConfig(BaseSettings):
+    """Conversation tabs of the feed panel: read-only agent turns that answer questions about the project."""
+
+    # Empty falls back to agent.model. A pinned model id, never a bare alias (opus, sonnet, haiku).
+    model: str = ""
+    max_concurrent: int = Field(3, ge=1, le=20)
+    turn_timeout: int = Field(600, gt=0)
+    max_turn_budget_usd: float = Field(1.0, gt=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CONVERSATION_")
+
+    @field_validator("model")
+    @classmethod
+    def _model_is_pinned(cls, value: str) -> str:
+        cleaned = value.strip()
+        if cleaned.lower() in _BARE_CLAUDE_ALIASES:
+            raise ValueError(f"conversation.model must be a pinned model id, not the bare alias {cleaned!r}")
+        return cleaned
+
+
 class DependencyHealthConfig(BaseSettings):
     """Dependency health scanning: manifest detection, registry lookups, urgency scoring."""
 
@@ -1518,6 +1541,7 @@ class ProjectConfig(BaseSettings):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     feed: FeedConfig = Field(default_factory=FeedConfig)
+    conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     testing: TestingConfig = Field(default_factory=TestingConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)

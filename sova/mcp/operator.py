@@ -2,8 +2,8 @@
 
 The seven tools in ``sova.mcp.tools`` (six blocking command tools plus ``sova_read_project``) run
 in the MCP process, so they cannot see or steer the agents a running server already owns.
-The tools registered here are the other direction: each is a thin loopback HTTP
-client of the server's own dashboard routes, so every check those routes make
+The tools registered here are the other direction (a conversation turn gets only the three read tools): each is a
+thin loopback HTTP client of the server's own dashboard routes, so every check those routes make
 (CSRF, suitability, duplicate and budget guards) keeps applying. This module
 never imports ``control_service`` or ``invoke_command``: an in-process call
 would bypass the running server's agent pool and its in-memory duplicate state.
@@ -32,6 +32,7 @@ import secrets
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 import httpx
 from mcp.server.mcpserver import MCPServer
@@ -42,6 +43,7 @@ from pydantic import ValidationError
 from sova.config.loader import load_config
 from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, format_host, is_loopback_host
 from sova.mcp.tools import _resolve_caller_dir
+from sova.utils.formatting import normalize_issue_key
 from sova.utils.logging import get_logger
 
 log = get_logger(component="mcp.operator")
@@ -440,19 +442,46 @@ async def _plan_decision(client: OperatorClient, decision: str, issue: int) -> d
     return result
 
 
+async def _explain_issue(client: OperatorClient, issue: str, run_id: int) -> dict[str, Any]:
+    query = urlencode({"issue": issue} if issue else {"run_id": run_id})
+    result = _require_dict(await client.request("GET", f"/issues/explain?{query}"), "explain")
+    # The tracker text inside is marked the same way every operator tool marks it: data, not instructions.
+    return {**result, "untrusted_note": _UNTRUSTED_NOTE}
+
+
+def _check_explain_target(issue: int | str, run_id: int) -> str:
+    """The normalized issue key (empty when *run_id* is the target), or a ``ToolError`` unless exactly one is given.
+
+    An issue is a number or a tracker key (``PROJ-123``); 0 and an empty string mean no issue.
+    """
+    raw = str(issue).strip()
+    given = raw not in ("", "0")
+    if run_id < 0 or given == bool(run_id):
+        raise ToolError("Give exactly one positive issue number, issue key or run id")
+    if not given:
+        return ""
+    try:
+        return normalize_issue_key(raw)
+    except ValueError as e:
+        raise ToolError(f"Invalid issue {raw[:60]!r}: give an issue number or tracker key") from e
+
+
 def register_operator_tools(
     server: MCPServer,
     *,
     project_dir: Path | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    read_only: bool = False,
 ) -> None:
-    """Register the eight operator tools on ``server``.
+    """Register the nine operator tools on ``server``, or only the three read tools when *read_only*.
 
     Args:
         server: The MCPServer to register tools on.
         project_dir: If provided, tools act on this project and the ``project_dir`` parameter is checked against
             it as the allowed root, as for the other SOVA tools.
         transport: An httpx transport to use instead of a real socket (tests target the dashboard app with it).
+        read_only: Register only ``sova_status``, ``sova_pending`` and ``sova_explain_issue``: the registration a
+            conversation turn gets (``sova mcp serve --read-only``), so no mutating tool exists to be called.
     """
     bound_dir = project_dir
 
@@ -487,6 +516,28 @@ def register_operator_tools(
         project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> dict[str, Any]:
         return await _within_deadline(_pending(client_for(project_dir)), "sova_pending")
+
+    @server.tool(
+        name="sova_explain_issue",
+        description=(
+            "Explain one issue: its state label and text, its runs with their result lines, the failed step and "
+            "its error, the newest run's last output lines, the PR state and verdict, the active handoff, and the "
+            "worktree (path, exists, dirty, local branch exists). Give the issue number or key, or one of its run ids. "
+            "Each section has a status: ok, unavailable (with the reason it could not be read) or not_applicable. "
+            f"Read-only. {_UNTRUSTED_NOTE}"
+        ),
+        annotations=_READ_ONLY,
+    )
+    async def explain_issue(
+        issue: Annotated[int | str, "Issue number or tracker key (PROJ-123); empty when run_id is given"] = "",
+        run_id: Annotated[int, "A run id of the issue (0 when issue is given)"] = 0,
+        project_dir: Annotated[str, "Path to the project directory"] = "",
+    ) -> dict[str, Any]:
+        key = _check_explain_target(issue, run_id)
+        return await _within_deadline(_explain_issue(client_for(project_dir), key, run_id), "sova_explain_issue")
+
+    if read_only:
+        return
 
     @server.tool(
         name="sova_start_run",

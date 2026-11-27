@@ -166,6 +166,7 @@ def labels() -> dict[str, str]:
         "today": "Today",
         "earlier": "Earlier",
         "open_in_work": "Open in Work",
+        "ask_about": "Ask about this",
         "no_activity": "No activity yet",
         "load_failed": "Could not load the activity. It retries on the next update.",
         "badge": "Activity Feed",

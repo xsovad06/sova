@@ -13,7 +13,8 @@ import asyncio
 import json
 import os
 import re
-from collections.abc import Iterator, Mapping
+import tomllib
+from collections.abc import Iterable, Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
 
@@ -24,7 +25,9 @@ from sova.ipc.runtime import (
     _HEADLESS_PREAMBLE_CORE,
     _HEADLESS_PREAMBLE_EXECUTE_SUFFIX,
     _VERSION_CHECK_TIMEOUT,
+    CONVERSATION_MCP_SERVER,
     AgentRuntime,
+    ConversationTurnUnsupportedError,
     StreamParser,
     _check_cli_available,
     _inject_agent_marker,
@@ -206,6 +209,33 @@ async def _probe_codex_auth() -> str | None:
 
 
 _CODEX_STDIN_PROBE_TIMEOUT = _VERSION_CHECK_TIMEOUT
+
+# Codex's system and managed configuration layers: `--ignore-user-config` skips only $CODEX_HOME/config.toml, and
+# the layers merge, so an MCP server defined here would sit beside the one a conversation turn passes.
+CODEX_SYSTEM_CONFIG_FILES = (Path("/etc/codex/config.toml"), Path("/etc/codex/managed_config.toml"))
+
+
+def codex_project_config_files(cwd: str | Path) -> list[Path]:
+    """The project-scoped ``.codex/config.toml`` candidates Codex merges for a run in *cwd*: *cwd* and each parent."""
+    start = Path(cwd).resolve()
+    return [directory / ".codex" / "config.toml" for directory in (start, *start.parents)]
+
+
+def codex_system_mcp_files(files: Iterable[Path] = CODEX_SYSTEM_CONFIG_FILES) -> list[str]:
+    """The Codex config files that define MCP servers. An unreadable one is listed too: it fails closed."""
+    found: list[str] = []
+    for path in files:
+        if not path.is_file():
+            continue
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            found.append(str(path))
+            continue
+        if data.get("mcp_servers"):
+            found.append(str(path))
+    return found
+
 
 # A clause mentioning "stdin" alongside one of these is describing the absence
 # of stdin support, not its presence (e.g. "PROMPT is not read from stdin").
@@ -432,6 +462,23 @@ def _interpret_codex_auth_probe(text: str | None) -> tuple[bool | None, str]:
         return True, "authenticated"
 
     return None, _AUTH_UNKNOWN_DETAIL
+
+
+def _toml_string(value: str) -> str:
+    """*value* as a TOML basic string: quotes, backslashes and control characters escaped, everything else literal.
+
+    ``json.dumps()`` is not TOML: it writes a character outside the Basic Multilingual Plane as a surrogate pair
+    (two ``\\u`` escapes), which TOML rejects, so a checkout path holding one would break the whole override.
+    """
+    out = []
+    for char in value:
+        if char in ('"', "\\"):
+            out.append("\\" + char)
+        elif ord(char) < 0x20 or ord(char) == 0x7F:
+            out.append(f"\\u{ord(char):04x}")
+        else:
+            out.append(char)
+    return '"' + "".join(out) + '"'
 
 
 class CodexRuntime(AgentRuntime):
@@ -674,6 +721,70 @@ class CodexRuntime(AgentRuntime):
             extra_scrub=ANTHROPIC_CREDENTIAL_VARS | ORCHESTRATOR_ONLY_VARS,
             extra_env=_codex_extra_env(env),
             stdin_payload=stdin_payload,
+        )
+
+    async def spawn_conversation_turn(
+        self,
+        prompt: str,
+        cwd: str | Path,
+        *,
+        mcp_command: list[str],
+        env: dict[str, str] | None = None,
+        model: str | None = None,
+        max_budget_usd: Decimal | None = None,
+        resume_session: str | None = None,
+    ) -> AgentProcess | FileAgentProcess:
+        """A conversation turn in Codex's read-only sandbox, with the read-only SOVA MCP server as its tool source.
+
+        ``codex exec resume`` takes no ``--sandbox`` flag, so a resumed turn could not be pinned to the read-only
+        sandbox on the command line; Codex turns therefore never resume (``continues_sessions`` is False) and the
+        caller replays the transcript. Codex cannot enforce a budget cap, so *max_budget_usd* is not forwarded,
+        and its model comes from ``codex.model`` as for every Codex spawn.
+
+        An MCP server runs outside the sandbox, so none from the operator's own Codex config may load:
+        ``--ignore-user-config`` skips ``$CODEX_HOME/config.toml`` (a ``--config mcp_servers=...`` override alone is
+        merged into that table, not a replacement for it, so the operator's servers would survive it), and
+        ``--ignore-rules`` skips the execpolicy rules. Auth still comes from ``CODEX_HOME``. The system layers
+        (``/etc/codex``) and the project layers (``.codex/config.toml`` from the checkout up) merge in regardless, so a
+        turn is refused while any of them defines an MCP server.
+
+        The prompt (prior messages, tracker text) is never put on argv: a CLI whose stdin prompt delivery is not
+        confirmed fails the turn instead of falling back the way a pipeline spawn does.
+        """
+        # The system layers and the project layers (.codex/config.toml in the checkout and its parents) merge in
+        # whatever --ignore-user-config says, so a turn is refused while any of them defines an MCP server.
+        layer_files = [*CODEX_SYSTEM_CONFIG_FILES, *codex_project_config_files(cwd)]
+        configured_mcp = await asyncio.to_thread(codex_system_mcp_files, layer_files)
+        if configured_mcp:
+            raise ConversationTurnUnsupportedError(
+                f"A Codex configuration layer defines MCP servers ({', '.join(configured_mcp)}), which a read-only "
+                "conversation turn cannot exclude"
+            )
+        if not await self._resolve_stdin_capable():
+            # The probe cannot tell a CLI without stdin support from one whose --help timed out, so the verdict is
+            # not kept: the next turn probes again instead of being refused for as long as this instance lives.
+            self._stdin_capable = None
+            raise ConversationTurnUnsupportedError(
+                "This Codex CLI does not document reading the prompt from stdin, and a conversation turn never puts "
+                "its prompt on the command line; upgrade the Codex CLI (npm install -g @openai/codex)"
+            )
+        args = _codex_exec_args(None, model=self._config.model, sandbox="read-only")
+        # Right after the ``exec`` subcommand, wherever _codex_exec_args() puts it.
+        exec_at = args.index("exec") + 1
+        args[exec_at:exec_at] = ["--ignore-user-config", "--ignore-rules"]
+        command = ", ".join(_toml_string(part) for part in mcp_command[1:])
+        server = f"{{command = {_toml_string(mcp_command[0])}, args = [{command}]}}"
+        args.extend(["--config", f"mcp_servers={{{CONVERSATION_MCP_SERVER} = {server}}}"])
+        log.info("codex.spawn_conversation", cwd=str(cwd), model=self._config.model, sandbox="read-only")
+        return await _spawn_agent_process(
+            args,
+            cwd,
+            env,
+            None,
+            None,
+            extra_scrub=ANTHROPIC_CREDENTIAL_VARS | ORCHESTRATOR_ONLY_VARS,
+            extra_env=_codex_extra_env(env),
+            stdin_payload=prompt,
         )
 
     def parse_output(self, line: str) -> StreamEvent | None:

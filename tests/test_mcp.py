@@ -45,6 +45,7 @@ class TestCreateServer:
             "sova_read_project",
             "sova_status",
             "sova_pending",
+            "sova_explain_issue",
             "sova_start_run",
             "sova_stop_run",
             "sova_resume_run",

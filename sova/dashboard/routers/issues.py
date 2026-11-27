@@ -13,6 +13,7 @@ from sova.adapters.base import AdapterError, PriorityUnavailableError
 from sova.adapters.priority import Priority
 from sova.config.context import get_project_dir
 from sova.config.loader import load_config
+from sova.utils.formatting import normalize_issue_key
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -95,3 +96,30 @@ async def set_priority(number: Annotated[int, Path(gt=0)], body: PriorityRequest
     except Exception:  # noqa: BLE001 (the write succeeded; the board catches up on its rebuild cadence)
         log.warning("issues.priority_board_refresh_failed", issue=number, exc_info=True)
     return {"issue": number, "priority": body.priority.value}
+
+
+@router.get(
+    "/explain",
+    responses={
+        400: {"description": "Neither or both of issue and run_id were given, or the run has no issue"},
+        404: {"description": "No run has that id"},
+    },
+)
+async def explain_issue(issue: str | None = None, run_id: int | None = None) -> dict:
+    """What SOVA knows about one issue (the read behind the ``sova_explain_issue`` MCP tool). Read-only."""
+    from sova.config.context import resolve_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+    from sova.dashboard.services.mcp_service import ExplainRequestError, RunNotFoundError
+    from sova.dashboard.services.mcp_service import explain_issue as explain
+
+    project_dir = resolve_project_dir(get_project_dir(), default_project_dir=get_default_project_dir())
+    try:
+        cleaned = normalize_issue_key(issue) if issue is not None else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="issue must be an issue number or key") from e
+    try:
+        return await explain(cleaned, run_id, project_dir)
+    except RunNotFoundError as e:
+        raise HTTPException(status_code=404, detail=e.user_message) from e
+    except ExplainRequestError as e:
+        raise HTTPException(status_code=400, detail=e.user_message) from e

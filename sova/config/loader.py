@@ -399,6 +399,7 @@ _NESTED_SECTIONS = (
     "testing",
     "output",
     "feed",
+    "conversation",
     "monitoring",
     "knowledge",
     "integration",

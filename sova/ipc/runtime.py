@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import plistlib
 import re
 import shutil
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -21,9 +23,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES, CodexConfig, ProjectConfig
-from sova.ipc.claude_stream import claude_event_lines
+from sova.ipc.claude_stream import claude_event_blocks
 from sova.ipc.control import AgentProcess, FileAgentProcess
-from sova.llm.cli_args import build_claude_cli_args
+from sova.llm.cli_args import build_claude_cli_args, build_claude_conversation_args
 from sova.llm.errors import ComponentMisconfiguredError
 from sova.llm.models import CURATED_MODELS, StreamEvent, build_claude_cli_result
 from sova.utils.env import (
@@ -220,6 +222,69 @@ async def _spawn_agent_process(
     if stdin_payload is not None:
         await write_stdin_and_close(proc, stdin_payload)
     return AgentProcess(proc)
+
+
+# The only tools a conversation turn (the feed panel's conversation tabs) may call: the read tools of
+# ``sova mcp serve --read-only``, which registers nothing else (sova.mcp.server.create_server(read_only=True)).
+CONVERSATION_MCP_TOOLS: tuple[str, ...] = ("sova_status", "sova_pending", "sova_explain_issue")
+CONVERSATION_MCP_SERVER = "sova"
+
+
+def conversation_mcp_command(project_dir: Path) -> list[str]:
+    """The argv of the read-only SOVA MCP server a conversation turn gets, bound to *project_dir*."""
+    return [sys.executable, "-m", "sova", "mcp", "serve", "--project", str(project_dir), "--read-only"]
+
+
+class ConversationTurnUnsupportedError(RuntimeError):
+    """The runtime has no enforced read-only mode for a conversation turn, so none is spawned on it."""
+
+
+# Where Claude Code reads managed policy settings (macOS, then Linux). Hooks defined there run whatever a turn's own
+# --settings say, so a conversation turn is refused while any exist.
+CLAUDE_MANAGED_SETTINGS_DIRS = (Path("/Library/Application Support/ClaudeCode"), Path("/etc/claude-code"))
+# The macOS MDM delivery of the same policy: a configuration profile lands as a managed-preferences plist.
+CLAUDE_MANAGED_PLISTS = (Path("/Library/Managed Preferences/com.anthropic.claudecode.plist"),)
+
+
+def _plist_defines_hooks(path: Path) -> bool:
+    """True when the plist at *path* defines hooks, or cannot be read (it fails closed)."""
+    try:
+        with path.open("rb") as handle:
+            data = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return True
+    return isinstance(data, dict) and bool(data.get("hooks"))
+
+
+def claude_managed_hook_files(
+    dirs: Iterable[Path] = CLAUDE_MANAGED_SETTINGS_DIRS, plists: Iterable[Path] = CLAUDE_MANAGED_PLISTS
+) -> list[str]:
+    """The managed settings files (and MDM plists) that define hooks. An unreadable one is listed too: it fails closed.
+
+    Windows registry policy is not read: a conversation turn on a host that delivers hooks that way is not detected.
+    """
+    found: list[str] = [str(path) for path in plists if path.is_file() and _plist_defines_hooks(path)]
+    for root in dirs:
+        candidates = [root / "managed-settings.json"]
+        drop_in = root / "managed-settings.d"
+        if drop_in.is_dir():
+            try:
+                candidates.extend(sorted(drop_in.glob("*.json")))
+                # glob() yields nothing for a directory it cannot list: listing it is what proves it readable.
+                next(iter(drop_in.iterdir()), None)
+            except OSError:
+                found.append(str(drop_in))
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                found.append(str(path))
+                continue
+            if isinstance(data, dict) and data.get("hooks"):
+                found.append(str(path))
+    return found
 
 
 # Matches _ENUMERATION_TTL_SECONDS in sova/llm/client.py: a runtime's model
@@ -457,6 +522,33 @@ class AgentRuntime(ABC):
         """
         ...
 
+    @property
+    def continues_sessions(self) -> bool:
+        """Whether ``spawn_conversation_turn(resume_session=...)`` continues the runtime's own session.
+
+        False (the default) means the caller replays the stored transcript in the prompt instead.
+        """
+        return False
+
+    async def spawn_conversation_turn(
+        self,
+        prompt: str,
+        cwd: str | Path,
+        *,
+        mcp_command: list[str],
+        env: dict[str, str] | None = None,
+        model: str | None = None,
+        max_budget_usd: Decimal | None = None,
+        resume_session: str | None = None,
+    ) -> AgentProcess | FileAgentProcess:
+        """Spawn one read-only conversation turn with *mcp_command* as its only MCP server.
+
+        Read-only must be enforced by the runtime itself (a tool allowlist, a sandbox), never by the advisory
+        ``spawn(read_only=True)``. A runtime without such a mechanism raises, so a turn never falls back to a
+        runtime that could write. *resume_session* is ignored unless ``continues_sessions`` is True.
+        """
+        raise ConversationTurnUnsupportedError(f"The {self.name} runtime has no enforced read-only conversation mode")
+
     @abstractmethod
     def parse_output(self, line: str) -> StreamEvent | None:
         """Parse a line of agent stdout into a StreamEvent.
@@ -673,6 +765,42 @@ class ClaudeCodeRuntime(AgentRuntime):
             stdin_payload=_HEADLESS_PREAMBLE + prompt,
         )
 
+    @property
+    def continues_sessions(self) -> bool:
+        # spawn_conversation_turn() passes the previous turn's session id to --resume.
+        return True
+
+    async def spawn_conversation_turn(
+        self,
+        prompt: str,
+        cwd: str | Path,
+        *,
+        mcp_command: list[str],
+        env: dict[str, str] | None = None,
+        model: str | None = None,
+        max_budget_usd: Decimal | None = None,
+        resume_session: str | None = None,
+    ) -> AgentProcess | FileAgentProcess:
+        # Read-only by allowlist: no built-in tool, only this MCP server, only its three read tools approved, no hook.
+        managed = await asyncio.to_thread(claude_managed_hook_files)
+        if managed:
+            raise ConversationTurnUnsupportedError(
+                f"Managed Claude Code settings define hooks ({', '.join(managed)}), which a read-only conversation "
+                "turn cannot disable"
+            )
+        mcp_config = json.dumps(
+            {"mcpServers": {CONVERSATION_MCP_SERVER: {"command": mcp_command[0], "args": mcp_command[1:]}}}
+        )
+        args = build_claude_conversation_args(
+            allowed_tools=tuple(f"mcp__{CONVERSATION_MCP_SERVER}__{tool}" for tool in CONVERSATION_MCP_TOOLS),
+            mcp_config=mcp_config,
+            model=model,
+            max_budget_usd=max_budget_usd,
+            resume_session=resume_session,
+        )
+        log.info("process.spawn_conversation", cwd=str(cwd), model=model, resume=bool(resume_session))
+        return await _spawn_agent_process(args, cwd, env, None, None, stdin_payload=prompt)
+
     def parse_output(self, line: str) -> StreamEvent | None:
         stripped = line.strip()
         if not stripped:
@@ -686,8 +814,11 @@ class ClaudeCodeRuntime(AgentRuntime):
 
         event_type = data.get("type", "")
         if event_type in ("assistant", "user"):
-            lines = claude_event_lines(data)
-            return StreamEvent(type="content", text="\n".join(lines), lines=lines) if lines else None
+            blocks = claude_event_blocks(data)
+            if not blocks:
+                return None
+            lines = [line for line, _kind in blocks]
+            return StreamEvent(type="content", text="\n".join(lines), lines=lines, kinds=[kind for _l, kind in blocks])
 
         if event_type == "result":
             result_text = str(data.get("result", ""))

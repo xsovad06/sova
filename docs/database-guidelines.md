@@ -343,6 +343,10 @@ whose process runs the migration first receives the export, and it holds every p
 - Nothing re-imports the file; the downgrade recreates both tables empty. On SQLite, the pre-migration `.db.bak`
   backup also still holds the rows; on PostgreSQL the export file is the only copy.
 
+### Conversation tables (migration 045)
+
+`conversations` and `conversation_messages` hold the feed panel's conversation tabs (issue #1544). They are not run tables: no `TaskRun` row is written for a turn, so turns never reach the run history. `ConversationMessage.conversation_id` cascades on delete (`ondelete="CASCADE"` plus the ORM cascade), and `conversation_service.delete_conversation()` also deletes the messages explicitly so a connection without `PRAGMA foreign_keys` cannot leave orphans. `Conversation.project_dir` binds a row to the project it was opened in; the service refuses a row whose binding is another project. `ConversationMessage.cost_usd` is read by `cost_service` beside `TaskRun.total_cost_usd`. A message left `running` by a restart is failed at startup (`mark_interrupted_turns()`).
+
 ## Multi-Project DB Support
 
 `init_db_for_project()` caches per-project engines in `_engines: dict[str, tuple]` keyed by URL. `get_session(project_dir=...)` routes to the correct engine. Each project gets its own `.claude/sova.db` file.

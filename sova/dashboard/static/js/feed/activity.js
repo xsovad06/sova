@@ -176,12 +176,21 @@ function _cardUrl(item) {
   return _workUrl({ number: item.number });
 }
 
+// "Ask about this": opens a conversation bound to the line's issue (js/feed/conversations.js handles the click).
+// The key pattern is the server's (normalize_issue_key): an issue number or a tracker key such as PROJ-123.
+var _ASK_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,49}$/;
+function _askHtml(item, labels) {
+  if (!item.issue_number || !_ASK_KEY_RE.test(String(item.issue_number)) || !labels.ask_about) return '';
+  return '<button type="button" class="feed-line-ask" data-feed-ask="' + escapeHtml(String(item.issue_number)) + '">' +
+    escapeHtml(labels.ask_about) + '</button>';
+}
+
 function _actionHtml(item, labels) {
   if (item.action) {
     var a = item.action;
     var key = _actionKey(a.ref);
     var state = actionStateFor(key);
-    return '<div class="feed-line-actions">' + actionStatusHtml(key) + sovaBtn(a.label, {
+    return '<div class="feed-line-actions">' + actionStatusHtml(key) + _askHtml(item, labels) + sovaBtn(a.label, {
       variant: 'secondary', size: 'sm', disabled: !!(state && state.status === 'running'),
       attrs: {
         'data-feed-action': a.id, 'data-feed-ref': a.ref, 'data-feed-label': a.label,
@@ -192,7 +201,7 @@ function _actionHtml(item, labels) {
   }
   // No action to run: point at the card where the user can decide.
   return '<div class="feed-line-actions"><a class="feed-line-open" href="' + escapeHtml(_cardUrl(item)) +
-    '">' + escapeHtml(labels.open_in_work || '') + '</a></div>';
+    '">' + escapeHtml(labels.open_in_work || '') + '</a>' + _askHtml(item, labels) + '</div>';
 }
 
 function _cost(value) {
@@ -200,10 +209,12 @@ function _cost(value) {
   return amount > 0 ? '<span class="feed-line-cost">$' + escapeHtml(amount.toFixed(2)) + '</span>' : '';
 }
 
-function _todayLine(entry) {
+function _todayLine(entry, labels) {
+  var ask = _askHtml(entry, labels || {});
   return '<div class="feed-line' + (entry.running ? ' feed-line-running' : '') + '">' + _dot(entry.state_color) +
     '<div class="feed-line-main">' + _lineHead(entry) +
-    '<div class="feed-line-text">' + escapeHtml(entry.text) + '</div></div>' + _cost(entry.cost_usd) + '</div>';
+    '<div class="feed-line-text">' + escapeHtml(entry.text) + '</div>' +
+    (ask ? '<div class="feed-line-actions">' + ask + '</div>' : '') + '</div>' + _cost(entry.cost_usd) + '</div>';
 }
 
 // A past period opens the run history on its dates (local, both inclusive, as the history's custom range takes).
@@ -243,7 +254,7 @@ export function activityHtml(data) {
     parts.push(_heading(labels.attention || '') + attention.map(function(item) { return _attentionLine(item, labels); }).join(''));
   }
   if (today.length) {
-    parts.push(_heading(labels.today || '') + today.map(_todayLine).join(''));
+    parts.push(_heading(labels.today || '') + today.map(function(entry) { return _todayLine(entry, labels); }).join(''));
   } else {
     parts.push(_heading(labels.today || '') + '<p class="feed-quiet">' + escapeHtml(data.empty_today_text || '') + '</p>');
   }
