@@ -44,6 +44,13 @@ def serve(
         str,
         typer.Option("--project", "-p", help="Path to the project directory to bind the server to."),
     ] = "",
+    read_only: Annotated[
+        bool,
+        typer.Option(
+            "--read-only",
+            help="Register only the read tools (sova_status, sova_pending, sova_explain_issue).",
+        ),
+    ] = False,
 ) -> None:
     """Start the SOVA MCP server.
 
@@ -63,7 +70,7 @@ def serve(
             console.print(f"[red]Project directory not found: {project_dir}[/red]")
             raise typer.Exit(code=1)
 
-    server = create_server(project_dir=project_dir)
+    server = create_server(project_dir=project_dir, read_only=read_only)
 
     console.print(f"[cyan]Starting SOVA MCP server (transport={transport.value})[/cyan]")
 

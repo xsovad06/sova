@@ -297,13 +297,16 @@ class StreamEvent:
     - "result": final result with costs (result field populated)
 
     ``lines`` is set when one event stands for several output lines (a Claude assistant event with a
-    tool call after its text); ``text`` is then those lines joined by newlines.
+    tool call after its text); ``text`` is then those lines joined by newlines. ``kinds``, when set, holds
+    one entry per line, ``"text"`` or ``"tool"`` (a tool call or tool error), so a consumer never has to
+    guess a line's kind from its text.
     """
 
     type: str
     text: str = ""
     result: LLMResult | None = field(default=None)
     lines: list[str] = field(default_factory=list)
+    kinds: list[str] = field(default_factory=list)
 
 
 @dataclass

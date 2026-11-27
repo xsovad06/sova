@@ -142,6 +142,10 @@ const cardLinks = mod.activityHtml({ labels, attention: [
 ] });
 out.cardLinks = [cardLinks.includes('class="feed-line-open" href="/work?card=pr%3A44"'),
   cardLinks.includes('class="feed-line-open" href="/work?number=PROJ-7"')];
+const askLine = (issue) => mod.activityHtml({ labels: { ...labels, ask_about: 'Ask about this' },
+  attention: [attention('ask', { issue_number: issue, number: String(issue), action: { id: 'integrate', label: 'Merge', ref: '9', confirm: false } })] });
+out.ask = [askLine('42').includes('data-feed-ask="42"'), askLine('PROJ-123').includes('data-feed-ask="PROJ-123"'),
+  askLine('-5').includes('data-feed-ask'), askLine('a b').includes('data-feed-ask')];
 const worded = mod.activityHtml({ today: [], attention: [attention('w')], background: [{ kind: 'k', count: 1, text: 't' }], periods: [{ text: 'p' }],
   background_summary: 'BG-WORDS', empty_today_text: 'ET-WORDS',
   labels: { attention: 'L-ATTN', today: 'L-TODAY', earlier: 'L-EARLIER', open_in_work: 'L-OPEN', no_activity: 'L-NONE' } });
@@ -477,6 +481,9 @@ class TestDrawing:
     ) -> None:
         # An issue or a PR with no issue opens its card; an id the board cannot select falls back to the history.
         assert run["cardLinks"] == [True, True]
+
+    def test_ask_about_this_appears_for_a_number_and_a_tracker_key_but_not_for_a_malformed_key(self, run: dict) -> None:
+        assert run["ask"] == [True, True, False, False]
 
     def test_every_word_on_the_panel_comes_from_the_payload(self, run: dict) -> None:
         assert run["serverWords"]

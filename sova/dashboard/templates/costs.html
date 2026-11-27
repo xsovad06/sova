@@ -144,7 +144,7 @@ async function loadDailyChart() {
                 <span class="text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity mb-1">$${parseFloat(d.cost_usd || 0).toFixed(2)}</span>
                 <div class="w-full bg-accent/70 rounded-t transition-all" style="height: ${Math.max(pct, 2)}%"></div>
               </div>
-              <span class="text-xs text-gray-600 mt-1">${d.date.substring(5)}</span>
+              <span class="text-xs text-gray-600 mt-1">${escapeHtml(d.date.substring(5))}</span>
             </div>`;
           }).join('')}
         </div>`;

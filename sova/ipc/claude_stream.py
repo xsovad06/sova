@@ -66,8 +66,13 @@ def summarize_tool_error(content: Any) -> str:
     return f"[tool error] {detail}" if detail else "[tool error]"
 
 
-def _block_line(event_type: Any, block: Any) -> str | None:
-    """The display line for one content block of an event, or ``None`` when it shows nothing."""
+# A display line's kind, for a consumer that must not infer it from the text (StreamEvent.kinds).
+KIND_TEXT = "text"
+KIND_TOOL = "tool"
+
+
+def _block_line(event_type: Any, block: Any) -> tuple[str, str] | None:
+    """The display line and kind of one content block of an event, or ``None`` when it shows nothing."""
     if isinstance(block, str):
         block = {"type": "text", "text": block}
     elif not isinstance(block, dict):
@@ -75,12 +80,22 @@ def _block_line(event_type: Any, block: Any) -> str | None:
     kind = block.get("type")
     if event_type == "assistant" and kind == "text":
         text = block.get("text")
-        return text if isinstance(text, str) and text.strip() else None
+        return (text, KIND_TEXT) if isinstance(text, str) and text.strip() else None
     if event_type == "assistant" and kind == "tool_use":
-        return summarize_tool_use(block.get("name") or "", block.get("input"))
+        return summarize_tool_use(block.get("name") or "", block.get("input")), KIND_TOOL
     if event_type == "user" and kind == "tool_result" and block.get("is_error"):
-        return summarize_tool_error(block.get("content"))
+        return summarize_tool_error(block.get("content")), KIND_TOOL
     return None
+
+
+def claude_event_blocks(data: dict[str, Any]) -> list[tuple[str, str]]:
+    """``claude_event_lines()`` with each line's kind (``KIND_TEXT`` or ``KIND_TOOL``), in block order."""
+    message = data.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    event_type = data.get("type")
+    return [line for block in content if (line := _block_line(event_type, block)) is not None]
 
 
 def claude_event_lines(data: dict[str, Any]) -> list[str]:
@@ -90,9 +105,4 @@ def claude_event_lines(data: dict[str, Any]) -> list[str]:
     each errored ``tool_result`` an error line. Any other event, and a successful ``tool_result`` (its
     body is the tool's raw output, too large to log), yields nothing.
     """
-    message = data.get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, list):
-        return []
-    event_type = data.get("type")
-    return [line for block in content if (line := _block_line(event_type, block)) is not None]
+    return [line for line, _kind in claude_event_blocks(data)]

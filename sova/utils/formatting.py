@@ -87,3 +87,17 @@ def format_cost_usd(value: Decimal | float | int | None) -> str:
     """
     decimal_value = value if isinstance(value, Decimal) else Decimal(str(value or 0))
     return decimal_to_json(decimal_value.quantize(_COST_USD_QUANTUM))
+
+
+# An issue number ("42") or tracker key ("PROJ-123"): the shape the handoff files accept. It never starts with a
+# hyphen, so a key can never be read as an option when an adapter passes it to a CLI. Anything else would reach the
+# tracker as a lookup it cannot answer.
+_ISSUE_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,49}")
+
+
+def normalize_issue_key(value: str | int) -> str:
+    """*value* without surrounding space or a leading ``#``. Raises ``ValueError`` when it is no issue key."""
+    cleaned = str(value).strip().lstrip("#")
+    if not _ISSUE_KEY_RE.fullmatch(cleaned):
+        raise ValueError("issue must be an issue number or key")
+    return cleaned

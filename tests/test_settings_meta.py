@@ -428,7 +428,7 @@ class TestSettingsSections:
                 "External Reviews",
                 "Security",
             ],
-            "Models and agents": ["LLM Provider", "Agent", "Roles", "Runaway Guards"],
+            "Models and agents": ["LLM Provider", "Agent", "Roles", "Runaway Guards", "Conversations"],
             "Pipeline": [
                 "Pipeline",
                 "Step Pipelines",

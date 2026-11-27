@@ -55,6 +55,7 @@ from sova.dashboard.routers import (
     agents,
     auth,
     briefing,
+    conversations,
     costs,
     dependencies,
     dependency_health,
@@ -106,6 +107,7 @@ from sova.dashboard.services import (
     setup_service,
 )
 from sova.dashboard.services.control_service import recover_stale_runs
+from sova.dashboard.services.conversation_service import mark_interrupted_turns
 from sova.dashboard.services.daemon_registry import (
     clear_registries,
     ensure_pr_throttle_loop,
@@ -857,6 +859,7 @@ def create_app(
                         continue
                     await init_db_for_project(p)
                     await recover_stale_runs(p)
+                    await mark_interrupted_turns(p)
                     await _kill_terminal_zombies(p)
                     await cleanup_old_output(p, pcfg.output.retention_days)
                     await get_feed_service().prune_old_events(retention_days=pcfg.feed.retention_days, project_dir=p)
@@ -865,6 +868,7 @@ def create_app(
         else:
             await init_db(resolved)
             await recover_stale_runs(resolved)
+            await mark_interrupted_turns(resolved)
             await _kill_terminal_zombies(resolved)
             await cleanup_old_output(resolved, cfg.output.retention_days)
             await get_feed_service().prune_old_events(retention_days=cfg.feed.retention_days, project_dir=resolved)
@@ -1888,6 +1892,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(oversight.router, prefix=prefix, dependencies=guard_deps)
     app.include_router(mcp.router, prefix=prefix, dependencies=[rate_limit_dep])
     app.include_router(feed.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(conversations.router, prefix=prefix, dependencies=guard_deps)
     app.include_router(fleet_insights.router, prefix=prefix, dependencies=guard_deps)
     app.include_router(reliability.router, prefix=prefix, dependencies=guard_deps)
 

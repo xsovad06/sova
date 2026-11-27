@@ -269,16 +269,20 @@
         {{ icon("close", "w-4 h-4") }}
       </button>
     </div>
-    <div id="feed-list" class="sova-side-panel-body feed-chat-body">
+    <!-- Tabs (static/js/feed/conversations.js): Activity first and fixed, one per open conversation, then Past. -->
+    <div id="feed-tabs" class="feed-tabs" role="tablist" aria-label="Activity and conversations"></div>
+    <div id="feed-list" class="sova-side-panel-body feed-chat-body" role="tabpanel" aria-labelledby="feed-tab-activity">
       <div id="feed-briefing-slot"></div>
       <div id="feed-activity" data-load-failed="{{ feed_labels()['load_failed'] }}"><p class="feed-empty">{{ feed_labels()['no_activity'] }}</p></div>
     </div>
-    <!-- Disabled conversational input (vision teaser) -->
-    <div class="feed-input-bar" data-tooltip="Conversational interaction coming soon" data-tooltip-pos="top">
-      {{ icon("lock", "w-3.5 h-3.5 text-gray-600 shrink-0") }}
-      <input type="text" class="feed-input" placeholder="Ask SOVA..." disabled aria-label="Ask SOVA (coming soon)">
-      <span class="feed-input-mic shrink-0">{{ icon("microphone", "w-4 h-4") }}</span>
-    </div>
+    <div id="feed-conversation" class="sova-side-panel-body feed-chat-body feed-conversation" role="tabpanel" aria-live="polite" hidden></div>
+    <div id="feed-past" class="sova-side-panel-body feed-chat-body" role="tabpanel" aria-labelledby="feed-tab-past" hidden></div>
+    <!-- A message here opens a conversation (Activity, Past) or continues the one shown. Voice input stays off. -->
+    <form id="feed-input-form" class="feed-input-bar" autocomplete="off">
+      <input type="text" id="feed-input" class="feed-input" placeholder="Ask SOVA..." aria-label="Ask SOVA" maxlength="8000">
+      <button type="submit" class="feed-send-btn" aria-label="Send">{{ icon("arrow-up", "w-4 h-4") }}</button>
+      <span class="feed-input-mic shrink-0" data-tooltip="Voice input coming soon" data-tooltip-pos="top" aria-hidden="true">{{ icon("microphone", "w-4 h-4") }}</span>
+    </form>
   </aside>
 
   <!-- Floating owl trigger (bottom-right, replaces sidebar bell) -->
@@ -416,7 +420,10 @@
       .catch(function(e) { console.error('feed panel failed to start', e); })
       .then(function() { return import('/static/js/feed/activity.js'); })
       .then(function(m) { m.init(); })
-      .catch(function(e) { console.error('feed activity failed to start', e); });
+      .catch(function(e) { console.error('feed activity failed to start', e); })
+      .then(function() { return import('/static/js/feed/conversations.js'); })
+      .then(function(m) { m.init(); })
+      .catch(function(e) { console.error('feed conversations failed to start', e); });
     import('/static/js/components/phone-shell.js')
       .then(function(m) { m.init(); })
       .catch(function(e) { console.error('phone shell failed to start', e); });

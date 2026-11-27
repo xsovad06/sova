@@ -61,6 +61,7 @@ GROUPS: dict[str, str] = {
     "oversight": "Oversight Agent",
     "a2a": "A2A Protocol",
     "conflict_resolution": "Conflict Resolution",
+    "conversation": "Conversations",
 }
 
 GROUP_ORDER: list[str] = [
@@ -97,6 +98,7 @@ GROUP_ORDER: list[str] = [
     "oversight",
     "a2a",
     "conflict_resolution",
+    "conversation",
 ]
 
 # The Settings page's section list (#1463): each section shows whole groups, and every group in GROUP_ORDER sits in
@@ -106,7 +108,7 @@ GROUP_ORDER: list[str] = [
 SECTIONS: dict[str, tuple[str, ...]] = {
     "overview": (),
     "project-and-tracker": ("project", "task_source", "commit", "ci", "external_reviews", "security"),
-    "models-and-agents": ("llm", "agent", "roles", "runaway"),
+    "models-and-agents": ("llm", "agent", "roles", "runaway", "conversation"),
     "pipeline": (
         "pipeline",
         "pipelines",
@@ -1689,6 +1691,37 @@ _REGISTRY: list[SettingMeta] = [
         "Feed page size",
         "Number of events loaded per history page when scrolling back through the feed",
         "dashboard",
+        "number",
+    ),
+    # Conversations (feed panel tabs)
+    SettingMeta(
+        "conversation.model",
+        "Conversation model",
+        "Model for conversation turns; empty uses agent.model. Pin an explicit ID (e.g. claude-sonnet-5), "
+        "not a bare alias",
+        "conversation",
+        # The turn runs on the agent runtime (its --model), so the choices are the runtime's, not the LLM provider's.
+        options_source="runtime",
+    ),
+    SettingMeta(
+        "conversation.max_concurrent",
+        "Concurrent turns",
+        "Conversation turns that may run at once in this project; they take no agent pool slot",
+        "conversation",
+        "number",
+    ),
+    SettingMeta(
+        "conversation.turn_timeout",
+        "Turn timeout (s)",
+        "Seconds a conversation turn may run before it is stopped and recorded as failed",
+        "conversation",
+        "number",
+    ),
+    SettingMeta(
+        "conversation.max_turn_budget_usd",
+        "Turn budget (USD)",
+        "Cost cap passed to the runtime for one conversation turn, where the runtime enforces one",
+        "conversation",
         "number",
     ),
     # Dependency Health

@@ -719,3 +719,81 @@ class PrRetro(Base):
         UniqueConstraint("pr_number", name="uq_pr_retros_pr_number"),
         Index("ix_pr_retros_merged_at", "merged_at"),
     )
+
+
+class ConversationStatus(StrEnum):
+    """Whether a conversation shows as a tab (open) or only under Past conversations (closed)."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class MessageStatus(StrEnum):
+    """Lifecycle of one conversation message; a user message is always ``done``."""
+
+    RUNNING = "running"
+    DONE = "done"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+class Conversation(Base):
+    """A feed-panel conversation: read-only agent turns about one project (issue #1544).
+
+    Never a ``TaskRun``: a turn is kept out of run history and the feed. ``project_dir`` binds the conversation to
+    the project it was opened in, so a multi-project server resolves every later call from the row, never from
+    ambient state. ``session_ref`` is the runtime's own session id from the last turn, empty when the runtime
+    cannot continue one (the transcript is replayed instead).
+    """
+
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_dir: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    runtime: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    session_ref: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=ConversationStatus.OPEN)
+    total_cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+    messages: Mapped[list[ConversationMessage]] = relationship(
+        back_populates="conversation", cascade=_CASCADE_ALL_DELETE_ORPHAN
+    )
+
+    __table_args__ = (Index("ix_conversations_project_status", "project_dir", "status"),)
+
+
+class ConversationMessage(Base):
+    """One message of a conversation: the user's question or an agent turn's answer, with its cost."""
+
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Tool lines the turn showed ("[sova_status]"), in order; kept so a reload shows them too.
+    tools: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=MessageStatus.DONE)
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+    __table_args__ = (
+        Index("ix_conversation_messages_conversation_id", "conversation_id"),
+        Index("ix_conversation_messages_status", "status"),
+        Index("ix_conversation_messages_created_at", "created_at"),
+    )

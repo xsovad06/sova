@@ -51,6 +51,7 @@ import re
 from decimal import Decimal
 from typing import Any
 
+from sova.ipc.claude_stream import KIND_TOOL
 from sova.llm.egress import scan_and_redact
 from sova.llm.models import CostSource, LLMResult, StreamEvent
 from sova.utils.logging import get_logger
@@ -235,6 +236,14 @@ def _str_field(obj: Any, key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _tool_event(text: str) -> StreamEvent:
+    """A content event of one tool line, marked as such for a consumer that must not infer it from the text.
+
+    An agent message stays a plain content event: a line-less event is read as answer text.
+    """
+    return StreamEvent(type="content", text=text, lines=[text], kinds=[KIND_TOOL])
+
+
 class CodexStreamParser:
     """Stateful parser mapping Codex JSONL events to StreamEvent/LLMResult."""
 
@@ -347,12 +356,15 @@ class CodexStreamParser:
 
     def _on_item_started(self, data: dict[str, Any]) -> StreamEvent | None:
         item, item_type = self._item_payload(data)
+        if item_type == "mcp_tool_call":
+            name = ".".join(part for part in (_str_field(item, "server"), _str_field(item, "tool")) if part)
+            return _tool_event(_redact_and_truncate(f"[{name or 'tool'}]", _MAX_COMMAND_CHARS))
         if item_type != "command_execution":
             return None
         command = _redact_and_truncate(_str_field(item, "command"), _MAX_COMMAND_CHARS)
         if not command:
             return None
-        return StreamEvent(type="content", text=f"$ {command}")
+        return _tool_event(f"$ {command}")
 
     def _on_item_completed(self, data: dict[str, Any]) -> StreamEvent | None:
         item, item_type = self._item_payload(data)
@@ -397,7 +409,7 @@ class CodexStreamParser:
             parts.append(f"exit {exit_code}")
         if output:
             parts.append(output)
-        return StreamEvent(type="content", text=" | ".join(parts))
+        return _tool_event(" | ".join(parts))
 
     def _render_file_change(self, item: dict[str, Any]) -> StreamEvent | None:
         changes = item.get("changes")
@@ -411,7 +423,7 @@ class CodexStreamParser:
         summary = f"{len(paths)} file(s) changed: {', '.join(shown)}"
         if len(paths) > _MAX_FILE_CHANGE_PATHS:
             summary += f" (+{len(paths) - _MAX_FILE_CHANGE_PATHS} more)"
-        return StreamEvent(type="content", text=_redact_and_truncate(summary))
+        return _tool_event(_redact_and_truncate(summary))
 
     def _on_turn_completed(self, data: dict[str, Any]) -> StreamEvent | None:
         # ``text`` is the last agent message as rendered for the stream, so it

@@ -1,4 +1,4 @@
-"""Cost tracking queries: CostRecord + TaskRun from the database."""
+"""Cost tracking queries: CostRecord + TaskRun from the database, plus conversation turns (never a TaskRun)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.config.loader import load_config
-from sova.db.models import CostRecord, TaskRun
+from sova.db.models import ConversationMessage, CostRecord, TaskRun
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.costs")
@@ -47,25 +47,39 @@ def local_midnight(now: datetime, zone: tzinfo) -> datetime:
     return datetime.combine(local_date, time.min, tzinfo=zone).astimezone(timezone.utc)
 
 
+_TURN_COST = ConversationMessage.cost_usd
+_TURN_AT = ConversationMessage.created_at
+
+
+async def _turn_cost(session: AsyncSession, since: datetime | None = None) -> Decimal:
+    """Conversation turn cost (feed-panel tabs, issue #1544), all time or since *since*."""
+    stmt = select(func.sum(_TURN_COST))
+    if since is not None:
+        stmt = stmt.where(_TURN_AT >= since)
+    return Decimal(await session.scalar(stmt) or 0)
+
+
 async def get_summary(session: AsyncSession, zone: tzinfo = timezone.utc) -> dict:
     """Aggregate cost summary. "Today" starts at midnight in ``zone`` (UTC unless the caller passes one).
 
     Uses TaskRun.total_cost_usd for totals (always written, even for paused runs)
     and TaskRun count for invocations.  CostRecord is used for per-model/phase breakdowns.
+    Conversation turn cost is added to every total (``conversation_cost_usd`` shows its share).
     """
-    total = await session.scalar(select(func.sum(TaskRun.total_cost_usd))) or 0
+    conversation_total = await _turn_cost(session)
+    total = Decimal(await session.scalar(select(func.sum(TaskRun.total_cost_usd))) or 0) + conversation_total
     count = await session.scalar(select(func.count(TaskRun.id))) or 0
 
     now = datetime.now(timezone.utc)
     today_start = local_midnight(now, zone)
-    today_total = (
+    today_total = Decimal(
         await session.scalar(select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= today_start)) or 0
-    )
+    ) + await _turn_cost(session, today_start)
 
     week_ago = now - timedelta(days=7)
-    rolling_7d = (
+    rolling_7d = Decimal(
         await session.scalar(select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= week_ago)) or 0
-    )
+    ) + await _turn_cost(session, week_ago)
 
     tokens_saved = int(await session.scalar(select(func.sum(CostRecord.tokens_saved))) or 0)
 
@@ -74,6 +88,7 @@ async def get_summary(session: AsyncSession, zone: tzinfo = timezone.utc) -> dic
         "total_invocations": count,
         "today_cost_usd": round(Decimal(today_total or 0), 4),
         "rolling_7d_usd": round(Decimal(rolling_7d or 0), 4),
+        "conversation_cost_usd": round(conversation_total, 4),
         "tokens_saved": tokens_saved,
         "compression_savings_usd": _compression_savings_usd(tokens_saved),
     }
@@ -115,8 +130,18 @@ async def get_daily(session: AsyncSession, days: int = 14) -> list[dict]:
         .group_by(day_col)
         .order_by(day_col)
     )
-    result = await session.execute(stmt)
-    return [{"date": str(row.day), "cost_usd": round(Decimal(row.cost or 0), 4)} for row in result.all()]
+    by_day: dict[str, Decimal] = {}
+    for row in (await session.execute(stmt)).all():
+        by_day[str(row.day)] = Decimal(row.cost or 0)
+    turn_day = func.date(_TURN_AT).label("day")
+    turns = (
+        select(turn_day, func.sum(_TURN_COST).label("cost"))
+        .where(_TURN_AT >= cutoff, _TURN_COST > 0)
+        .group_by(turn_day)
+    )
+    for row in (await session.execute(turns)).all():
+        by_day[str(row.day)] = by_day.get(str(row.day), Decimal(0)) + Decimal(row.cost or 0)
+    return [{"date": day, "cost_usd": round(cost, 4)} for day, cost in sorted(by_day.items())]
 
 
 async def get_monthly_projection(session: AsyncSession, days: int = 30) -> dict:
@@ -135,9 +160,17 @@ async def get_monthly_projection(session: AsyncSession, days: int = 30) -> dict:
         func.min(TaskRun.started_at).label("first_at"),
     ).where(TaskRun.started_at >= cutoff, TaskRun.total_cost_usd > 0)
     row = (await session.execute(stmt)).one()
+    turns = (
+        await session.execute(
+            select(func.sum(_TURN_COST).label("total"), func.min(_TURN_AT).label("first_at")).where(
+                _TURN_AT >= cutoff, _TURN_COST > 0
+            )
+        )
+    ).one()
 
-    total = Decimal(row.total or 0)
-    if total <= 0 or row.first_at is None:
+    total = Decimal(row.total or 0) + Decimal(turns.total or 0)
+    starts = [at if at.tzinfo else at.replace(tzinfo=timezone.utc) for at in (row.first_at, turns.first_at) if at]
+    if total <= 0 or not starts:
         return {
             "insufficient_data": True,
             "window_days": days,
@@ -147,9 +180,7 @@ async def get_monthly_projection(session: AsyncSession, days: int = 30) -> dict:
             "observed_days": 0,
         }
 
-    first_at = row.first_at
-    if first_at.tzinfo is None:
-        first_at = first_at.replace(tzinfo=timezone.utc)
+    first_at = min(starts)
 
     elapsed_days = (now - first_at).total_seconds() / 86400.0
     observed_days = min(days, max(1, round(elapsed_days)))

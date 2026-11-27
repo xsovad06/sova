@@ -18,6 +18,10 @@ from pathlib import Path
 # Fixed constant, no user text: blanks the commit and PR attribution so the CLI's built-in git
 # instructions stop telling the model to end PR bodies with "Generated with Claude Code".
 _ATTRIBUTION_OVERRIDE_SETTINGS = '{"attribution":{"commit":"","pr":""}}'
+# Fixed constant, no user text: a conversation turn's settings. ``disableAllHooks`` keeps every hook from the
+# operator's user, project and local settings (a SessionStart hook runs on start and resume, whatever the tool list)
+# out of a read-only turn. Hooks from managed policy cannot be disabled this way; the runtime refuses those.
+CONVERSATION_SETTINGS = '{"attribution":{"commit":"","pr":""},"disableAllHooks":true}'
 
 # Fixed constant, no user text: the system prompt of a tool-free turn (see build_claude_cli_args()).
 ISOLATED_SYSTEM_PROMPT = (
@@ -134,3 +138,49 @@ def write_system_prompt_file(system_prompt: str) -> Path:
         os.unlink(path_str)
         raise
     return Path(path_str)
+
+
+def build_claude_conversation_args(
+    *,
+    allowed_tools: tuple[str, ...],
+    mcp_config: str,
+    model: str | None = None,
+    max_budget_usd: Decimal | None = None,
+    resume_session: str | None = None,
+) -> list[str]:
+    """Build the ``claude -p`` argv of a read-only conversation turn (the feed panel's conversation tabs).
+
+    Unlike ``build_claude_cli_args()`` this never passes ``bypassPermissions``: ``--permission-mode default`` pins
+    the mode whatever the operator's settings say, and it denies, in a non-interactive call, every tool that is not
+    pre-approved. ``--tools ""`` removes every built-in
+    tool (no shell, no edit, no write, no file read), ``--strict-mcp-config`` ignores every MCP server but the one
+    in *mcp_config* (a read-only ``sova mcp serve`` registration), ``--allowedTools`` pre-approves exactly
+    *allowed_tools*, and ``--settings`` (``CONVERSATION_SETTINGS``) disables every hook. *mcp_config* is a fixed JSON
+    document holding no user text, and the prompt stays on stdin.
+    """
+    args = [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--settings",
+        CONVERSATION_SETTINGS,
+        # Pinned, so a defaultMode in the operator's own settings (bypassPermissions, acceptEdits) cannot widen it.
+        "--permission-mode",
+        "default",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        mcp_config,
+        "--allowedTools",
+        ",".join(allowed_tools),
+    ]
+    if model:
+        args.extend(["--model", model])
+    if max_budget_usd is not None:
+        args.extend(["--max-budget-usd", str(max_budget_usd)])
+    if resume_session:
+        args.extend(["--resume", resume_session])
+    return args
