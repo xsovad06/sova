@@ -47,10 +47,12 @@ def _make_run(
     pid: int | None = 12345,
     started_at: datetime | None = None,
     issue_number: str | None = "42",
+    role: str | None = "developer",
 ) -> MagicMock:
     run = MagicMock()
     run.id = run_id
     run.status = status
+    run.role = role
     run.current_step = current_step
     run.pid = pid
     run.started_at = started_at or datetime.now(timezone.utc)
@@ -138,6 +140,50 @@ class TestDetectAnomalies:
         assert len(findings) == 1
         assert findings[0].signal == AnomalySignal.PIPELINE_NOT_ADOPTED
         assert findings[0].action == WatchdogAction.KILL
+
+    @pytest.mark.parametrize("role", ["command:address-pr", "command:/integrate-pr 1558"])
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
+    def test_command_run_is_exempt_from_pipeline_adoption(self, _mock_alive: MagicMock, role: str) -> None:
+        # A slash-command run never goes through WorkflowEngine, so the "agent"
+        # sentinel is its normal state for the whole run, not a stuck pipeline.
+        wd = _make_watchdog(pipeline_adopt_timeout_minutes=5)
+        now = datetime.now(timezone.utc)
+        run = _make_run(role=role, current_step="agent", started_at=now - timedelta(minutes=10))
+        findings = wd._detect_anomalies(run, now, {run.id: now - timedelta(seconds=30)})
+        assert findings == []
+
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
+    def test_silent_command_run_still_hits_no_output_kill(self, _mock_alive: MagicMock) -> None:
+        wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
+        now = datetime.now(timezone.utc)
+        run = _make_run(role="command:address-pr", current_step="agent", started_at=now - timedelta(minutes=30))
+        findings = wd._detect_anomalies(run, now, {})
+        assert [f.signal for f in findings] == [AnomalySignal.NO_OUTPUT_KILL]
+
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
+    def test_quiet_command_run_still_hits_no_output_warn(self, _mock_alive: MagicMock) -> None:
+        wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
+        now = datetime.now(timezone.utc)
+        run = _make_run(role="command:address-pr", current_step="agent", started_at=now - timedelta(minutes=60))
+        findings = wd._detect_anomalies(run, now, {run.id: now - timedelta(minutes=20)})
+        assert [f.signal for f in findings] == [AnomalySignal.NO_OUTPUT_WARN]
+
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=False)
+    def test_dead_command_run_still_flagged_as_zombie(self, _mock_alive: MagicMock) -> None:
+        wd = _make_watchdog()
+        now = datetime.now(timezone.utc)
+        run = _make_run(role="command:address-pr", current_step="agent", started_at=now - timedelta(minutes=10))
+        findings = wd._detect_anomalies(run, now, {})
+        assert [f.signal for f in findings] == [AnomalySignal.ZOMBIE_PROCESS]
+
+    @pytest.mark.parametrize("role", [None, "developer", "reviewer"])
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
+    def test_non_command_run_still_killed_when_not_adopted(self, _mock_alive: MagicMock, role: str | None) -> None:
+        wd = _make_watchdog(pipeline_adopt_timeout_minutes=5)
+        now = datetime.now(timezone.utc)
+        run = _make_run(role=role, current_step="agent", started_at=now - timedelta(minutes=10))
+        findings = wd._detect_anomalies(run, now, {})
+        assert [f.signal for f in findings] == [AnomalySignal.PIPELINE_NOT_ADOPTED]
 
     @patch("sova.supervisor.watchdog.is_process_alive", return_value=False)
     def test_zombie_process(self, _mock_alive: MagicMock) -> None:
