@@ -40,6 +40,12 @@ except ImportError:
 
 log = get_logger(component="supervisor.watchdog")
 
+# Role prefix of a dashboard slash-command run (`command:address-pr`). Such a run
+# is a Claude Code session, not a WorkflowEngine pipeline, so it never replaces
+# the "agent" step sentinel. Mirrors agent_db._COMMAND_ROLE_PREFIX, kept local
+# so the supervisor does not import a dashboard service for one string.
+_COMMAND_ROLE_PREFIX = "command:"
+
 
 def _as_utc(dt: datetime) -> datetime:
     """Return dt with UTC tzinfo, adding it when SQLite returns naive datetimes."""
@@ -261,7 +267,13 @@ class AgentWatchdog:
         return findings
 
     def _check_pipeline_not_adopted(self, run: TaskRun, now: datetime) -> WatchdogFinding | None:
-        """Kill if pipeline was never adopted within timeout."""
+        """Kill if pipeline was never adopted within timeout.
+
+        A command run (`command:*` role) holds the "agent" sentinel for its whole life,
+        so it is left to the zombie and no-output checks instead of being killed here.
+        """
+        if (run.role or "").startswith(_COMMAND_ROLE_PREFIX):
+            return None
         if run.started_at is None:
             return None
         minutes_elapsed = (now - _as_utc(run.started_at)).total_seconds() / 60.0

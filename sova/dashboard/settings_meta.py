@@ -2234,7 +2234,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "watchdog.pipeline_adopt_timeout_minutes",
         "Pipeline adopt timeout (min)",
-        "Minutes before a run with current_step='agent' is killed (pipeline never adopted)",
+        "Minutes before a run with current_step='agent' is killed (pipeline never adopted); "
+        "dashboard command runs never adopt a pipeline and are exempt",
         "agent_health",
         "number",
     ),
