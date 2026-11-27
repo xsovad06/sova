@@ -16,8 +16,13 @@ log = get_logger(component="supervisor.gates.already_running")
 _ALREADY_RUNNING_TERMINAL = TASK_RUN_TERMINAL - {"awaiting_approval"}
 
 
-async def check_already_running(issue: int, session_factory: async_sessionmaker) -> BlockReason | None:
+async def check_already_running(
+    issue: int, session_factory: async_sessionmaker, *, fail_open: bool = True
+) -> BlockReason | None:
     """Check if an agent is already running or being started for this issue.
+
+    A failed check returns None (no block) by default, as gates fail open. With ``fail_open=False`` it
+    returns a block instead, for a caller such as a manual reset where an unknown answer must refuse.
 
     awaiting_approval runs (spec pending human review) block unconditionally: the researcher
     completed its work and the issue should not be re-researched even though the process exited.
@@ -48,5 +53,7 @@ async def check_already_running(issue: int, session_factory: async_sessionmaker)
                     )
     except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("already_running.check_failed", issue=issue, exc_info=True)
+        if not fail_open:
+            return BlockReason(gate="already_running", detail=f"Whether an agent is running for #{issue} is unknown")
 
     return None

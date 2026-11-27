@@ -23,7 +23,7 @@ from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.work_state import _build_pr_facts, resolve_next_action
 from sova.dashboard.services.work_verdict import resolve_sova_verdict
 from sova.db.models import SupervisorDecision
-from sova.git.pr import PRInfo, find_pr_for_issue_checked
+from sova.git.pr import PRInfo, PRLookupError, find_pr_for_issue_checked
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
     build_dependency_graph,
@@ -718,8 +718,66 @@ class TaskProgressionEngine:
             results.append(result)
         return results
 
-    async def _execute_stale_reset(self, issue_number: int) -> dict:
-        """Execute a RESET_STALE_STATE decision: roll back the issue to the appropriate prior state."""
+    async def stuck_reset_blockers(self, issue_number: int) -> list[str]:
+        """Why one issue may not be reset as stuck, empty when it may.
+
+        A stuck issue is in progress on the tracker with no agent running or being started for it and no open PR.
+        An unreadable tracker state or PR lookup is a blocker too, so a failed read never permits a reset. The PR
+        lookup uses the adapter's repository and user, else the configured ``github_repo`` and ``github_user`` (a
+        Jira-backed project); with neither repository the reset is refused, since an open PR cannot be ruled out.
+        """
+        try:
+            state = await self._adapter.get_state(str(issue_number))
+        except Exception:  # noqa: BLE001 (fail closed: any adapter failure means the state is unknown)
+            log.warning("stuck_reset.get_state_failed", issue=issue_number, exc_info=True)
+            return ["its tracker state could not be read"]
+        blockers: list[str] = []
+        if state != TaskState.IN_PROGRESS:
+            blockers.append(f"it is {state.value}, not in progress")
+        alive = await check_already_running(issue_number, self._session_factory, fail_open=False)
+        if alive is not None:
+            blockers.append(alive.detail)
+        # A Jira adapter has no repo or user of its own; its PRs live in the configured GitHub repository.
+        repo = getattr(self._adapter, "repo", "") or getattr(self._config, "github_repo", "") or ""
+        github_user = getattr(self._adapter, "github_user", "") or getattr(self._config, "github_user", "") or ""
+        if not repo:
+            blockers.append("no repository is configured, so an open PR cannot be ruled out")
+            return blockers
+        try:
+            pr = await find_pr_for_issue_checked(
+                str(issue_number), repo=repo, github_user=github_user, trust_cached_miss=False
+            )
+        except PRLookupError:
+            log.warning("stuck_reset.pr_lookup_failed", issue=issue_number, exc_info=True)
+            blockers.append("its open PRs could not be checked")
+        else:
+            if pr is not None:
+                blockers.append(f"it has an open PR #{pr.number}")
+        return blockers
+
+    async def reset_stuck_issue(self, issue_number: int, *, emit_feed: bool = True) -> dict:
+        """Reset one stuck in-progress issue through the stale reset, refusing when ``stuck_reset_blockers`` names any.
+
+        Returns ``{"refused": True, "reason"}`` for a refusal, else the stale reset's own result. ``emit_feed=False``
+        leaves out the reset's own Activity line, for a caller that emits its own. The stale reset re-checks for a
+        live agent (failing closed) immediately before it moves the issue, so an agent started after the blocker
+        check is never rolled back underneath.
+        """
+        blockers = await self.stuck_reset_blockers(issue_number)
+        if blockers:
+            log.info("stuck_reset.refused", issue=issue_number, blockers=blockers)
+            return {"refused": True, "issue": issue_number, "reason": "; ".join(blockers)}
+        return await self._execute_stale_reset(issue_number, emit_feed=emit_feed, strict_alive_check=True)
+
+    async def _execute_stale_reset(
+        self, issue_number: int, *, emit_feed: bool = True, strict_alive_check: bool = False
+    ) -> dict:
+        """Execute a RESET_STALE_STATE decision: roll back the issue to the appropriate prior state.
+
+        ``{"reset": True}`` only when the issue was moved; a rollback that skipped or failed is an error.
+        ``strict_alive_check=True`` re-checks for a live agent before either rollback path, refusing when that is
+        unknown, instead of checking (fail-open) only when no prior run exists.
+        """
         from sqlalchemy import select
 
         from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
@@ -739,27 +797,36 @@ class TaskProgressionEngine:
                 result = await session.execute(stmt)
                 last_run = result.scalar_one_or_none()
 
-            if last_run is not None:
-                from sova.dashboard.services.agent_recovery import rollback_issue_state
-
-                await rollback_issue_state(last_run.id, self._project_dir)
-                target_desc = f"run {last_run.id} (role: {last_run.role or 'unknown'})"
-            else:
-                alive_block = await check_already_running(issue_number, self._session_factory)
+            if strict_alive_check or last_run is None:
+                alive_block = await check_already_running(
+                    issue_number, self._session_factory, fail_open=not strict_alive_check
+                )
                 if alive_block:
                     log.info("stale_reset.skipped_agent_alive", issue=issue_number, detail=alive_block.detail)
                     return {"skipped": True, "issue": issue_number, "reason": alive_block.detail}
+            if last_run is not None:
+                from sova.dashboard.services.agent_recovery import rollback_issue_state
+
+                if not await rollback_issue_state(last_run.id, self._project_dir):
+                    log.info("stale_reset.rollback_did_not_move", issue=issue_number, run_id=last_run.id)
+                    return {
+                        "error": f"Rolling back #{issue_number} via run {last_run.id} did not move it "
+                        "(no prior state recorded, its state unreadable, or the transition failed)"
+                    }
+                target_desc = f"run {last_run.id} (role: {last_run.role or 'unknown'})"
+            else:
                 await self._adapter.transition_state(str(issue_number), TaskState.TRIAGED)
                 target_desc = "TRIAGED (no prior run)"
 
             invalidate_graph_cache(self._repo_cache_key)
-            emit_safe(
-                f"Stale IN_PROGRESS reset: #{issue_number}",
-                severity=FeedEventSeverity.warning,
-                detail=f"No agent alive, rolled back via {target_desc}",
-                category="supervisor",
-                metadata={"issue": issue_number},
-            )
+            if emit_feed:
+                emit_safe(
+                    f"Stale IN_PROGRESS reset: #{issue_number}",
+                    severity=FeedEventSeverity.warning,
+                    detail=f"No agent alive, rolled back via {target_desc}",
+                    category="supervisor",
+                    metadata={"issue": issue_number},
+                )
             log.info("stale_reset.completed", issue=issue_number, via=target_desc)
             return {"reset": True, "issue": issue_number}
         except Exception:  # noqa: BLE001 (fail-open: stale reset spans DB and adapter transition calls)
