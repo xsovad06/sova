@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from sova.adapters.base import TaskState
+from sova.core.ownership import pr_owned_by_other
 from sova.core.state import TaskStatus
 from sova.utils.logging import get_logger
 
@@ -49,6 +50,8 @@ class WorkItemState(StrEnum):
     PR_REVIEW_EXHAUSTED = "pr_review_exhausted"
     # label says in-review but the last run's PR is no longer open (merged, or closed unmerged); no PR action applies
     PR_MERGED_ISSUE_OPEN = "pr_merged_issue_open"
+    # the PR's author is another login than github_user: shown read-only, no write action (#1594)
+    PR_OWNED_BY_OTHER = "pr_owned_by_other"
 
     # Handoff states
     SPEC_REVIEW = "spec_review"
@@ -79,6 +82,7 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.PR_SOVA_PENDING: "Sova Review Pending",
     WorkItemState.PR_REVIEW_EXHAUSTED: "Review Budget Exhausted",
     WorkItemState.PR_MERGED_ISSUE_OPEN: "PR Merged, Issue Open",
+    WorkItemState.PR_OWNED_BY_OTHER: "Owned by Another Login",
     WorkItemState.SPEC_REVIEW: "Spec Review",
     WorkItemState.MERGED: "Merged",
     WorkItemState.DONE: "Done",
@@ -108,6 +112,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.PR_SOVA_PENDING: "peach",
     WorkItemState.PR_REVIEW_EXHAUSTED: "peach",
     WorkItemState.PR_MERGED_ISSUE_OPEN: "gray",
+    WorkItemState.PR_OWNED_BY_OTHER: "gray-dim",
     WorkItemState.SPEC_REVIEW: "peach",
     WorkItemState.MERGED: "green-strong",
     WorkItemState.DONE: "green-strong",
@@ -215,6 +220,7 @@ _REVIEW_STAGE_STATES = frozenset(
         WorkItemState.PR_REVIEW_ADDRESSED,
         WorkItemState.PR_AWAITING_BOT_REREVIEW,
         WorkItemState.PR_SOVA_PENDING,
+        WorkItemState.PR_OWNED_BY_OTHER,
         TaskState.IN_REVIEW,
     }
 )
@@ -546,6 +552,8 @@ def _get_actions(
             [review, address],
         ),
         S.MERGED: (cmd("after_merge", "Post-Merge", "purple", "after-merge"), []),
+        # Another login's PR: read-only, every action here would write to it.
+        S.PR_OWNED_BY_OTHER: (None, []),
     }
     return actions.get(state, (None, []))
 
@@ -613,6 +621,16 @@ class PRFacts:
     # True when the only standing change request is a bot's on an older commit, its threads resolved
     # (computed_state awaiting_bot_rereview): GitHub still counts it, so the PR must not route to Integrate.
     bot_rereview_pending: bool = False
+    # The PR author's login and the login this project acts as (#1594). The resolver offers no write action on a
+    # PR whose known author is another login; either left empty (a caller with no author, or
+    # supervisor.respect_ownership off) keeps the routing exactly as before.
+    pr_author: str = ""
+    github_user: str = ""
+
+
+def owned_by_label(owner: str) -> str:
+    """The label of an item another login owns, naming that login."""
+    return f"Owned by {owner}"
 
 
 @dataclass(frozen=True)
@@ -779,6 +797,12 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     if facts.pr_state == "MERGED":
         return resolved(WorkItemState.MERGED, None)
 
+    # Ahead of every rule that routes to a write (rebase, address, review, integrate): another login's PR is shown
+    # read-only, and action_id None parks the supervisor rather than spawning on it.
+    chain.append("owned_by_other")
+    if pr_owned_by_other(facts.pr_author, facts.github_user):
+        return resolved(WorkItemState.PR_OWNED_BY_OTHER, None)
+
     chain.append("conflicting")
     if facts.mergeable == "CONFLICTING" or facts.merge_state == "DIRTY":
         return resolved(WorkItemState.PR_CONFLICTED, "rebase")
@@ -895,6 +919,14 @@ def _fact_agent_running(facts: PRFacts) -> str:
 
 def _fact_merged(facts: PRFacts) -> str:
     return f"PR state is {facts.pr_state}"
+
+
+def _fact_owned_by_other(facts: PRFacts) -> str:
+    if pr_owned_by_other(facts.pr_author, facts.github_user):
+        return f"PR is owned by {facts.pr_author} (not {facts.github_user}): read-only"
+    if not facts.pr_author or not facts.github_user:
+        return "PR ownership is not checked"
+    return f"PR is owned by {facts.pr_author}"
 
 
 def _fact_conflicting(facts: PRFacts) -> str:
@@ -1023,6 +1055,7 @@ def _fact_awaiting_review(facts: PRFacts) -> str:
 _RULE_RENDERERS: dict[str, Callable[[PRFacts], str]] = {
     "agent_running": _fact_agent_running,
     "merged": _fact_merged,
+    "owned_by_other": _fact_owned_by_other,
     "conflicting": _fact_conflicting,
     "draft": _fact_draft,
     "ci_failed": _fact_ci_failed,
@@ -1078,14 +1111,22 @@ def _build_pr_facts(
     *,
     external_reviews_enabled: bool,
     max_address_cycles: int = 0,
+    github_user: str = "",
 ) -> PRFacts:
-    """Translate raw pr_data/sova_verdict dicts into a PRFacts snapshot."""
+    """Translate raw pr_data/sova_verdict dicts into a PRFacts snapshot.
+
+    *github_user* is the login the project acts as, passed only while ``supervisor.respect_ownership`` is on;
+    with the PR's ``author`` it lets the resolver keep another login's PR read-only.
+    """
     from sova.dashboard.services.work_verdict import TRUNCATED_KEY, UNRESOLVED_KEY
 
     verdict = sova_verdict or {}
     has_review = verdict.get("has_sova_review", False)
     raw_verdict = verdict.get("verdict") if has_review else None
     sova_verdict_addressed = raw_verdict == "addressed"
+    # The PR service flattens author to a login; raw `gh --json author` is a {"login": ...} object.
+    raw_author = pr_data.get("author")
+    pr_author = (raw_author.get("login") or "") if isinstance(raw_author, dict) else (raw_author or "")
 
     return PRFacts(
         running_agent=False,
@@ -1111,6 +1152,8 @@ def _build_pr_facts(
         review_history_unresolved=bool(verdict.get(UNRESOLVED_KEY, False)),
         review_history_truncated=bool(verdict.get(TRUNCATED_KEY, False)),
         sova_review_incomplete=bool(verdict.get("review_incomplete", False)) if has_review else False,
+        pr_author=pr_author if isinstance(pr_author, str) else "",
+        github_user=github_user,
     )
 
 
@@ -1123,6 +1166,7 @@ def compute_work_item_resolution(
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
     closed_pr_number: int | None = None,
+    github_user: str = "",
 ) -> tuple[Resolution, PRFacts | None]:
     """Compute the full Resolution plus the PRFacts it was built from (#992).
 
@@ -1145,6 +1189,9 @@ def compute_work_item_resolution(
     ``closed_pr_number`` is the last run's PR when it is known to be no longer open. It reclassifies
     only the label fallback that would have said PR_AWAITING_REVIEW, so a stale in-review label
     does not offer review actions on a PR that is gone.
+
+    ``github_user`` is the login the project acts as, or ``""`` while ``supervisor.respect_ownership`` is off:
+    with it, a PR whose author is another login resolves to PR_OWNED_BY_OTHER (read-only).
     """
     if running_agent is not None or pr_data is not None:
         facts = _build_pr_facts(
@@ -1152,6 +1199,7 @@ def compute_work_item_resolution(
             sova_verdict,
             external_reviews_enabled=external_reviews_enabled,
             max_address_cycles=max_address_cycles,
+            github_user=github_user,
         )
         if running_agent is not None:
             facts = replace(facts, running_agent=True)

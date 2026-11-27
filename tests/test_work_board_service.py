@@ -95,6 +95,7 @@ def _sources(
     jira_display_name: str = "",
     open_prs: dict[int, set[int]] | None = None,
     open_prs_unavailable: bool = False,
+    owner_check_user: str = "",
 ):
     graph = DependencyGraph(tasks or [])
     ranking = ranking_graph or graph
@@ -110,6 +111,7 @@ def _sources(
                     "items": items or [],
                     "github_user": github_user,
                     "jira_display_name": jira_display_name,
+                    "owner_check_user": owner_check_user,
                 }
             ),
         ),
@@ -372,6 +374,26 @@ class TestUpNext:
         assert _numbers(result["up_next"]) == [6]
         assert result["up_next"][0]["assignees"] == ["Straße"]
         assert result["up_next"][0]["mine"] is True
+
+    @pytest.mark.parametrize(
+        ("owner_check_user", "assignees", "owner"),
+        [
+            ("alice", ("bob",), "bob"),
+            ("", ("bob",), ""),  # respect_ownership off
+            ("alice", ("Alice",), ""),  # a login differing only by case is the same owner
+            ("alice", ("bob", "alice"), ""),  # assigned to the acting login among others
+            ("alice", (), ""),  # unassigned
+        ],
+    )
+    async def test_an_issue_without_a_work_item_assigned_to_another_login_is_read_only(
+        self, owner_check_user: str, assignees: tuple[str, ...], owner: str
+    ) -> None:
+        with _sources(tasks=[_task(6, assignees=assignees)], owner_check_user=owner_check_user):
+            result = await board.build_board(PROJECT)
+
+        entry = result["up_next"][0]
+        assert entry["owner"] == owner  # always present: board.js and drawer.js read it on every entry
+        assert (entry["start"] is None) == bool(owner)
 
     async def test_jira_assignee_does_not_match_the_github_login(self) -> None:
         task = _task(6, assignees=("alex",), jira_key="ARVAC-6")

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from sova.adapters.base import Task
 from sova.adapters.priority import Priority
 from sova.config.loader import load_config
+from sova.core.ownership import assignees_are_logins, issue_owned_by_other
 from sova.dashboard.services.pr_service import confirm_open_pr_numbers, known_open_pr_numbers
 from sova.dashboard.services.work_state import (
     _AWAITING_APPROVAL as _AWAITING_APPROVAL,
@@ -65,6 +66,9 @@ from sova.dashboard.services.work_state import (
 )
 from sova.dashboard.services.work_state import (
     describe_reason_chain as describe_reason_chain,
+)
+from sova.dashboard.services.work_state import (
+    owned_by_label as owned_by_label,
 )
 from sova.dashboard.services.work_state import (
     resolve_next_action as resolve_next_action,
@@ -596,6 +600,34 @@ def _resolve_spec_review_override(
     return WorkItemState.SPEC_REVIEW, primary, [], spec_handoff_actions
 
 
+# Nothing is written on a finished item, and a running agent's Stop and status controls are never refused
+# (the resolver ranks agent_running ahead of owned_by_other too), so none of them shows an owner.
+_OWNER_EXEMPT_STATES = frozenset({WorkItemState.MERGED, WorkItemState.DONE, WorkItemState.AGENT_RUNNING})
+
+
+def _item_owner(
+    state: WorkItemState, facts: PRFacts | None, assignees: list[str], *, github_user: str, compare_assignees: bool
+) -> str:
+    """The login(s) owning an item when it is not *github_user*, ``""`` when the item is writable (#1594).
+
+    A PR the resolver found owned by another login names its author. An issue with no PR, or whose PR author
+    is unknown, is owned by others when it is assigned only to them (never on Jira, whose assignee is not a
+    GitHub login): the same fallback order as ``check_ownership()``, so the board never offers a write the
+    start path refuses. *github_user* is empty while ``supervisor.respect_ownership`` is off, which leaves
+    every item writable.
+    """
+    if state is WorkItemState.PR_OWNED_BY_OTHER and facts is not None:
+        return facts.pr_author
+    if (
+        (facts is None or not facts.pr_author)
+        and compare_assignees
+        and state not in _OWNER_EXEMPT_STATES
+        and issue_owned_by_other(assignees, github_user)
+    ):
+        return ", ".join(assignees)
+    return ""
+
+
 def _task_pr_numbers(
     issue_num: str,
     pr_data: dict | None,
@@ -635,6 +667,8 @@ def _build_task_item(
     max_address_cycles: int = 0,
     suitability: dict | None = None,
     open_pr_numbers: Collection[int] | None = None,
+    github_user: str = "",
+    compare_assignees: bool = True,
 ) -> dict:
     """Build a work item from a queue task and its linked PR/handoff/agent.
 
@@ -654,6 +688,7 @@ def _build_task_item(
         external_reviews_enabled=external_reviews_enabled,
         max_address_cycles=max_address_cycles,
         closed_pr_number=closed_pr_number,
+        github_user=github_user,
     )
     last_run_status = last_run.get("status") if last_run else None
     state, primary, secondary, spec_handoff_actions = _resolve_spec_review_override(
@@ -672,16 +707,27 @@ def _build_task_item(
     matched_reason = reason_chain[-1] if reason_chain else ""
     primary, secondary = _drop_integrate_while_bot_rereview(primary, secondary, facts)
     _attach_merge_blockers(primary, secondary, resolution, facts)
+    owner = _item_owner(
+        state,
+        facts if pr_data else None,
+        task.get("assignees", []),
+        github_user=github_user,
+        compare_assignees=compare_assignees,
+    )
+    handoff_actions = spec_handoff_actions or _extract_handoff_actions(handoff, state)
+    if owner:
+        primary, secondary, handoff_actions = None, [], []
 
     return _build_item(
         issue_number=issue_num,
         pr_number=pr_number,
+        owner=owner,
         title=task.get("title", ""),
         url=task.get("url", ""),
         state=state,
         primary_action=primary,
         secondary_actions=secondary,
-        handoff_actions=spec_handoff_actions or _extract_handoff_actions(handoff, state),
+        handoff_actions=handoff_actions,
         handoff_summary=_extract_handoff_summary(handoff, state),
         running_agent=_format_running_agent(running) if running else None,
         pr_details=_format_pr_details(pr_data) if pr_data else None,
@@ -717,6 +763,7 @@ def _build_pr_item(
     *,
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
+    github_user: str = "",
 ) -> dict:
     """Build a work item from a standalone or unlinked PR."""
     resolution, facts = compute_work_item_resolution(
@@ -726,6 +773,7 @@ def _build_pr_item(
         sova_verdict=sova_verdict,
         external_reviews_enabled=external_reviews_enabled,
         max_address_cycles=max_address_cycles,
+        github_user=github_user,
     )
     state = resolution.state
     reason_chain = _reason_chain_payload(resolution, facts)
@@ -733,16 +781,19 @@ def _build_pr_item(
     primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr["number"])
     primary, secondary = _drop_integrate_while_bot_rereview(primary, secondary, facts)
     _attach_merge_blockers(primary, secondary, resolution, facts)
+    owner = _item_owner(state, facts, [], github_user=github_user, compare_assignees=False)
+    handoff_actions = [] if owner else _extract_handoff_actions(handoff, state)
 
     return _build_item(
         issue_number=issue_num,
         pr_number=pr["number"],
+        owner=owner,
         title=pr.get("title", ""),
         url=pr.get("url", ""),
         state=state,
         primary_action=primary,
         secondary_actions=secondary,
-        handoff_actions=_extract_handoff_actions(handoff, state),
+        handoff_actions=handoff_actions,
         handoff_summary=_extract_handoff_summary(handoff, state),
         running_agent=_format_running_agent(running) if running else None,
         pr_details=_format_pr_details(pr),
@@ -785,6 +836,7 @@ def _append_standalone_pr_items(
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
     jira_tickets: dict[str, Task] | None = None,
+    github_user: str = "",
 ) -> None:
     """Add work items for PRs not already covered by a queue task.
 
@@ -816,6 +868,7 @@ def _append_standalone_pr_items(
             sova_verdict=verdict,
             external_reviews_enabled=external_reviews_enabled,
             max_address_cycles=max_address_cycles,
+            github_user=github_user,
         )
         # A linked issue outside the actionable queue still has its own tracker title and URL.
         task = graph.get_task(int(issue_num)) if graph is not None and issue_num and issue_num.isdigit() else None
@@ -924,6 +977,9 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         # 0 disables the review_budget_exhausted rule: fail open to the
         # pre-budget-cap routing rather than inventing an exhausted state.
         max_address_cycles = 0
+    # Empty turns the read-only owner display off, as supervisor.respect_ownership=false does for the gate.
+    owner_check_user = cfg.github_user if cfg and cfg.supervisor.respect_ownership else ""
+    is_jira = bool(cfg and cfg.task_source.type == "jira")
 
     (queue, fetched_prs, handoffs, agents_data), graph = await asyncio.gather(
         _fetch_all_sources(project_dir=project_dir, slug=slug, cfg=cfg),
@@ -961,6 +1017,8 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
                 max_address_cycles=max_address_cycles,
                 suitability=_classify_queue_item(task, graph),
                 open_pr_numbers=open_pr_numbers,
+                github_user=owner_check_user,
+                compare_assignees=assignees_are_logins(cfg.task_source.type) if cfg else True,
             )
         )
 
@@ -974,10 +1032,11 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         verdicts_by_issue=verdicts_by_issue,
         graph=graph,
         jira_base_url=cfg.task_source.jira_base_url if cfg and cfg.task_source.type == "jira" else "",
-        is_jira=bool(cfg and cfg.task_source.type == "jira"),
+        is_jira=is_jira,
         external_reviews_enabled=external_reviews_enabled,
         max_address_cycles=max_address_cycles,
         jira_tickets=jira_tickets,
+        github_user=owner_check_user,
     )
 
     _sort_items(items)
@@ -1024,6 +1083,8 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         "max_concurrent": max_concurrent,
         "agents_running": agents_running,
         "github_user": github_user,
+        # The login the read-only owner display compares assignees with: "" while it is off or on Jira (#1594).
+        "owner_check_user": "" if is_jira else owner_check_user,
         "jira_display_name": jira_display_name,
         "api_health": api_health,
         # How old the graph the classification came from is, and whether its rebuild failed (None without one).
@@ -1424,13 +1485,16 @@ def _format_pr_details(pr: dict) -> dict:
 
 def _build_item(**kwargs: object) -> dict:
     state: WorkItemState = kwargs["state"]  # type: ignore[assignment]
+    owner = str(kwargs.get("owner") or "")
     return {
         "issue_number": kwargs["issue_number"],
         "pr_number": kwargs["pr_number"],
         "title": kwargs["title"],
         "url": kwargs["url"],
         "state": state.value,
-        "state_label": state_label(state),
+        "state_label": (
+            owned_by_label(owner) if state is WorkItemState.PR_OWNED_BY_OTHER and owner else state_label(state)
+        ),
         "state_color": state_color(state),
         "primary_action": kwargs["primary_action"],
         "secondary_actions": kwargs["secondary_actions"],
@@ -1459,4 +1523,6 @@ def _build_item(**kwargs: object) -> dict:
         "updated_at": kwargs.get("updated_at", ""),
         # None for a standalone PR item: there is no issue to classify.
         "suitability": kwargs.get("suitability"),
+        # The other login(s) owning the item, "" when it is writable: the page shows it read-only (#1594).
+        "owner": owner,
     }

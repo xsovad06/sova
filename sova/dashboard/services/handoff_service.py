@@ -438,7 +438,13 @@ def start_succeeded(result: object) -> bool:
 def _refusal_codes() -> frozenset[str]:
     """Codes of a start refused by a conflict with current state, which a later retry of the same action can pass."""
     from sova.dashboard.services.agent_lifecycle import NO_FREE_SLOT
-    from sova.dashboard.services.agent_validation import ISSUE_CONFLICT, MEMORY_PRESSURE, STATE_NOT_READY
+    from sova.dashboard.services.agent_validation import (
+        GH_LOGIN_MISMATCH,
+        ISSUE_CONFLICT,
+        MEMORY_PRESSURE,
+        OWNED_BY_OTHER,
+        STATE_NOT_READY,
+    )
 
     return frozenset(
         {
@@ -446,6 +452,9 @@ def _refusal_codes() -> frozenset[str]:
             ISSUE_CONFLICT,
             MEMORY_PRESSURE,
             STATE_NOT_READY,
+            # Another login owns the PR or issue, or gh acts as another account (#1594): a refusal, not a failure.
+            OWNED_BY_OTHER,
+            GH_LOGIN_MISMATCH,
             "network_unreachable",
             "budget_exceeded",
             "suitability_blocked",

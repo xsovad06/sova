@@ -135,7 +135,7 @@
         <span class="sidebar-label">
           <span class="flex items-center gap-1.5 text-gray-400">
             <span id="auth-widget-label" class="shrink-0">provider</span>
-            {% if footer_github_user %}<span id="auth-widget-user" class="min-w-0 truncate text-gray-500">&middot; {{ footer_github_user }}</span>{% endif %}
+            {% if footer_github_user %}<span id="auth-widget-user" class="min-w-0 truncate text-gray-500" data-tooltip="Acts on GitHub as {{ footer_github_user }}" aria-label="Acts on GitHub as {{ footer_github_user }}">&middot; {{ footer_github_user }}</span>{% endif %}
           </span>
           <span class="sidebar-hide block text-xs text-gray-600">SOVA v0.1.0</span>
         </span>
@@ -236,6 +236,13 @@
       <div class="sova-more-status">
         <div id="more-sheet-provider-slot"></div>
         <div id="more-sheet-resources-slot"></div>
+        {#- The account this dashboard writes to GitHub as, so two machines on one repository can be told apart. -#}
+        {#- Reuses the sidebar footer's value: one config read per render, and both widgets agree. -#}
+        {% if footer_github_user %}
+        <div class="sova-more-row" data-acting-github-user>
+          {{ icon("github", "sova-more-icon") }}<span class="flex-1">Acts on GitHub as</span><span class="sova-more-row-value truncate">{{ footer_github_user }}</span>
+        </div>
+        {% endif %}
         {% if in_project %}
         <a href="/" class="sova-more-row">
           {{ icon("arrows-right-left", "sova-more-icon") }}<span class="flex-1">Switch project</span><span class="sova-more-row-value truncate">{{ project_name }}</span>

@@ -587,7 +587,17 @@ export function cardParts(entry, stage) {
     body = _chips([statePill(entry), _age(entry)]);
     buttons = _btn('', 'Unhide', 'work-unhide', [n], off);
   }
+  if (entry.owner && stage !== 'running' && stage !== 'hidden') {
+    // Another login owns it: shown read-only, so every write button goes (Stop and Unhide never write to it).
+    return { right: right, body: ownerLine(entry.owner) + body, buttons: '', covers: [] };
+  }
   return { right: right, body: body, buttons: _fixButton(entryKey(entry), entry.number) + buttons, covers: covers };
+}
+
+// The read-only note of an item another login owns (#1594); truncates rather than widening a phone card.
+export function ownerLine(owner) {
+  return owner ? '<div class="text-xs text-gray-400 min-w-0 truncate" data-owner>Owned by ' +
+    '<span class="text-gray-200">' + escapeHtml(owner) + '</span>: read-only</div>' : '';
 }
 
 function _card(entry, stage) {

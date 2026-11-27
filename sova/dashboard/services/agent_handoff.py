@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.loader import load_config
-from sova.dashboard.services.agent_validation import check_memory_pressure
+from sova.dashboard.services.agent_validation import (
+    GH_LOGIN_MISMATCH,
+    OWNED_BY_OTHER,
+    check_memory_pressure,
+)
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
@@ -151,6 +155,43 @@ async def _persist_completing_agent_handoff(run_id: int, handoff: "DashboardHand
                     log.info("auto_handoff.handoff_json_persisted", run_id=run_id, source=handoff.source)
     except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("auto_handoff.handoff_json_persist_failed", run_id=run_id, exc_info=True)
+
+
+# The start refusals that mean "another login owns this, or gh acts as one", recorded on the finished run.
+_OWNERSHIP_REFUSALS = frozenset({OWNED_BY_OTHER, GH_LOGIN_MISMATCH})
+# The finished run's handoff_json key the refusal is recorded under (an existing column: no schema change).
+AUTO_HANDOFF_REFUSED_KEY = "auto_handoff_refused"
+
+
+async def _record_ownership_refusal(agent: AgentState, action_id: str, result: dict) -> None:
+    """Record on the finished run, and in the feed, that its auto-handoff was refused for ownership."""
+    # The start's own refusal message, which names the owner (never exception text).
+    refusal_message: str = result.get("error") or ""
+    log.warning("auto_handoff.ownership_refused", run_id=agent.run_id, action_id=action_id, detail=refusal_message)
+    emit_safe(
+        f"{_issue_label(agent.issue or '')}: auto-handoff to {action_id} refused",
+        severity=FeedEventSeverity.warning,
+        detail=refusal_message,
+        category="handoff",
+        metadata={"issue": agent.issue, "run_id": agent.run_id, "code": result.get("code")},
+    )
+    if agent.run_id is None:
+        return
+    refusal = {
+        "action_id": action_id,
+        "code": result.get("code"),
+        "detail": refusal_message,
+        "owner": result.get("owner", ""),
+    }
+    try:
+        from sova.db.models import TaskRun
+
+        async with await get_session(project_dir=agent.project_dir) as session, session.begin():
+            task_run = await session.get(TaskRun, agent.run_id)
+            if task_run is not None:
+                task_run.handoff_json = {**(task_run.handoff_json or {}), AUTO_HANDOFF_REFUSED_KEY: refusal}
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("auto_handoff.ownership_refusal_record_failed", run_id=agent.run_id, exc_info=True)
 
 
 def _slug_for_project(project_dir: Path | None, pool: ProjectAgents | None = None) -> str | None:
@@ -418,6 +459,8 @@ async def _run_auto_handoff(agent: AgentState, pool: ProjectAgents | None) -> No
     result = await _start_follow_up(action, target_issue, target_role, pr_num, slug)
     if result is not None and not start_succeeded(result):
         log.warning("auto_handoff.start_refused", run_id=agent.run_id, action_id=action.id, result=result)
+        if isinstance(result, dict) and result.get("code") in _OWNERSHIP_REFUSALS:
+            await _record_ownership_refusal(agent, action.id, result)
 
 
 async def _process_auto_handoff(agent: AgentState, pool: ProjectAgents | None = None) -> None:

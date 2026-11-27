@@ -383,6 +383,103 @@ async def fetch_launch_task(issue: str, project_dir: Path) -> Task | None:
         return None
 
 
+# Codes of a write refused because another login owns the PR or issue, or gh acts as another account.
+OWNED_BY_OTHER = "owned_by_other"
+GH_LOGIN_MISMATCH = "gh_login_mismatch"
+# One bound for every ownership lookup a start does, so a slow GitHub costs one deadline, never a hung start.
+_OWNERSHIP_CHECK_TIMEOUT_S = 15.0
+
+
+async def _ownership_refusal(
+    cfg: ProjectConfig,
+    issue: str,
+    *,
+    pr_number: int | None,
+    check_pr: bool,
+    task: Task | None,
+    compare_assignees: bool,
+) -> dict | None:
+    """The OWNED_BY_OTHER refusal for the issue or PR a start targets, else None (every lookup fails open, logged)."""
+    from sova.core.ownership import check_ownership
+
+    # Also for a PR run: check_ownership() falls back to the issue's assignees when the PR author is unknown,
+    # as the board does, and reads them through the adapter only then.
+    adapter = None
+    if task is None and issue and compare_assignees:
+        from sova.adapters import create_adapter
+
+        try:
+            adapter = create_adapter(cfg)
+        except Exception:  # noqa: BLE001 (fail open: without an adapter the assignees are unknown, logged)
+            log.warning("write_ownership.adapter_failed", issue=issue, exc_info=True)
+    try:
+        async with asyncio.timeout(_OWNERSHIP_CHECK_TIMEOUT_S):
+            result = await check_ownership(
+                issue or None,
+                github_user=cfg.github_user,
+                check_pr=bool(pr_number) or check_pr,
+                respect_ownership=cfg.supervisor.respect_ownership,
+                repo=cfg.github_repo,
+                pr_number=pr_number,
+                adapter=adapter,
+                task_assignees=task.assignees if task is not None else None,
+                compare_assignees=compare_assignees,
+            )
+    except TimeoutError:
+        # Fail open: a slow GitHub leaves the owner unknown, the same as any other unreadable owner.
+        log.warning("write_ownership.check_timed_out", issue=issue, pr=pr_number, exc_info=True)
+        return None
+    if result.refused:
+        log.info("write_ownership.refused", issue=issue, pr=result.pr_number, owner=result.owner)
+        return {"error": result.detail, "code": OWNED_BY_OTHER, "owner": result.owner}
+    return None
+
+
+async def check_write_ownership(
+    issue: str,
+    project_dir: Path,
+    *,
+    pr_number: int | None = None,
+    check_pr: bool = False,
+    task: Task | None = None,
+) -> dict | None:
+    """The refusal for a write whose PR or issue another login owns, or made through another gh login; else None.
+
+    Runs before any process is spawned by ``start_agent()``, ``start_command()`` and ``_process_auto_handoff()``,
+    with the same ``check_ownership()`` the supervisor gate uses. A run on *pr_number* (or with *check_pr*)
+    checks the PR author; any other run checks the issue's assignees (*task*'s when the caller read it). The gh
+    login check is independent of ``supervisor.respect_ownership``. Every lookup fails open and is logged.
+    """
+    try:
+        cfg = load_config(project_dir)
+    except Exception:  # noqa: BLE001 (fail open: an unloadable config leaves the owner unknown, logged)
+        log.warning("write_ownership.config_failed", issue=issue, exc_info=True)
+        return None
+
+    from sova.core.ownership import assignees_are_logins
+    from sova.utils.gh import gh_login_mismatch
+
+    # With neither an issue nor a PR there is no owner to read: only the gh login check below applies.
+    refusal = None
+    if issue or pr_number:
+        refusal = await _ownership_refusal(
+            cfg,
+            issue,
+            pr_number=pr_number,
+            check_pr=check_pr,
+            task=task,
+            compare_assignees=assignees_are_logins(cfg.task_source.type),
+        )
+    if refusal:
+        return refusal
+
+    mismatch = await gh_login_mismatch(cfg.github_user)
+    if mismatch:
+        log.warning("write_ownership.gh_login_mismatch", issue=issue, github_user=cfg.github_user)
+        return {"error": mismatch, "code": GH_LOGIN_MISMATCH}
+    return None
+
+
 STATE_NOT_READY = "state_not_ready"
 
 
