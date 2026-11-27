@@ -5260,3 +5260,251 @@ class TestExecuteDecisionReviewLoop:
         decision = ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_REVIEWER, reason="Re-review")
         result = await engine.execute_decision(decision)
         assert "error" in result
+
+
+class TestResetStuckIssue:
+    """reset_stuck_issue() resets one in-progress issue only with no agent running for it and no open PR."""
+
+    @staticmethod
+    def _engine(state: TaskState) -> TaskProgressionEngine:
+        adapter = AsyncMock()
+        adapter.repo = "acme/widgets"
+        adapter.github_user = "bot"
+        adapter.get_state = AsyncMock(return_value=state)
+        return _make_engine(adapter=adapter)
+
+    @pytest.mark.parametrize(
+        ("state", "alive", "pr", "reason"),
+        [
+            pytest.param(
+                TaskState.IN_PROGRESS,
+                BlockReason(gate="already_running", detail="Agent already running for #42 (run 9, PID 77)"),
+                None,
+                "Agent already running for #42 (run 9, PID 77)",
+                id="agent-running",
+            ),
+            pytest.param(
+                TaskState.IN_PROGRESS,
+                None,
+                PRInfo(number=5, url=""),
+                "it has an open PR #5",
+                id="open-pr",
+            ),
+            pytest.param(TaskState.IN_REVIEW, None, None, "it is in_review, not in progress", id="not-in-progress"),
+        ],
+    )
+    async def test_refused_and_nothing_reset(
+        self, state: TaskState, alive: BlockReason | None, pr: PRInfo | None, reason: str
+    ) -> None:
+        engine = self._engine(state)
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=alive),
+            patch("sova.supervisor.progression.find_pr_for_issue_checked", new_callable=AsyncMock, return_value=pr),
+            patch.object(engine, "_execute_stale_reset", new_callable=AsyncMock) as reset,
+        ):
+            result = await engine.reset_stuck_issue(42)
+        reset.assert_not_awaited()
+        assert result == {"refused": True, "issue": 42, "reason": reason}
+
+    async def test_unreadable_pr_lookup_refuses(self) -> None:
+        from sova.git.pr import PRLookupError
+
+        engine = self._engine(TaskState.IN_PROGRESS)
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked",
+                new_callable=AsyncMock,
+                side_effect=PRLookupError("HTTP 502"),
+            ),
+            patch.object(engine, "_execute_stale_reset", new_callable=AsyncMock) as reset,
+        ):
+            result = await engine.reset_stuck_issue(42)
+        reset.assert_not_awaited()
+        assert result == {"refused": True, "issue": 42, "reason": "its open PRs could not be checked"}
+
+    async def test_stuck_issue_is_reset_through_the_stale_reset(self) -> None:
+        engine = self._engine(TaskState.IN_PROGRESS)
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.find_pr_for_issue_checked", new_callable=AsyncMock, return_value=None),
+            patch.object(
+                engine, "_execute_stale_reset", new_callable=AsyncMock, return_value={"reset": True, "issue": 42}
+            ) as reset,
+        ):
+            result = await engine.reset_stuck_issue(42)
+        reset.assert_awaited_once_with(42, emit_feed=True, strict_alive_check=True)
+        assert result == {"reset": True, "issue": 42}
+
+    async def test_an_unknown_liveness_answer_refuses_through_the_real_gate(self) -> None:
+        engine = self._engine(TaskState.IN_PROGRESS)
+        engine._session_factory = TestAlreadyRunningFailClosed._broken_factory()
+        with (
+            patch("sova.supervisor.progression.find_pr_for_issue_checked", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_execute_stale_reset", new_callable=AsyncMock) as reset,
+        ):
+            result = await engine.reset_stuck_issue(42)
+        reset.assert_not_awaited()
+        assert result == {"refused": True, "issue": 42, "reason": "Whether an agent is running for #42 is unknown"}
+
+    @pytest.mark.parametrize(
+        "late",
+        [
+            pytest.param(BlockReason(gate="already_running", detail="Agent already running for #42"), id="started"),
+            pytest.param(
+                BlockReason(gate="already_running", detail="Whether an agent is running for #42 is unknown"),
+                id="unknown",
+            ),
+        ],
+    )
+    async def test_an_agent_started_after_the_blocker_check_is_not_rolled_back(self, late: BlockReason) -> None:
+        import sova.dashboard.services.agent_recovery as recovery
+
+        engine = self._engine(TaskState.IN_PROGRESS)
+        self._with_last_run(engine)
+        alive = AsyncMock(side_effect=[None, late])
+        with (
+            patch("sova.supervisor.progression.check_already_running", alive),
+            patch("sova.supervisor.progression.find_pr_for_issue_checked", new_callable=AsyncMock, return_value=None),
+            patch.object(recovery, "rollback_issue_state", new_callable=AsyncMock, return_value=True) as rollback,
+            patch("sova.dashboard.services.feed_service.emit_safe") as emit,
+        ):
+            result = await engine.reset_stuck_issue(42, emit_feed=False)
+        rollback.assert_not_awaited()
+        assert result == {"skipped": True, "issue": 42, "reason": late.detail}
+        # The re-check right before the rollback fails closed, as the blocker check does.
+        assert [call.kwargs for call in alive.await_args_list] == [{"fail_open": False}, {"fail_open": False}]
+        emit.assert_not_called()
+
+    async def test_a_conversation_reset_writes_no_line_of_its_own(self) -> None:
+        import sova.dashboard.services.agent_recovery as recovery
+
+        engine = self._engine(TaskState.IN_PROGRESS)
+        self._with_last_run(engine)
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.find_pr_for_issue_checked", new_callable=AsyncMock, return_value=None),
+            patch.object(recovery, "rollback_issue_state", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.services.feed_service.emit_safe") as emit,
+        ):
+            result = await engine.reset_stuck_issue(42, emit_feed=False)
+        assert result == {"reset": True, "issue": 42}
+        # The confirm writes the one Activity line, so the reset itself writes none.
+        emit.assert_not_called()
+
+    async def test_liveness_fails_closed_and_the_pr_lookup_skips_a_cached_miss(self) -> None:
+        engine = self._engine(TaskState.IN_PROGRESS)
+        with (
+            patch(
+                "sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None
+            ) as alive,
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked", new_callable=AsyncMock, return_value=None
+            ) as find_pr,
+        ):
+            assert await engine.stuck_reset_blockers(42) == []
+        assert alive.await_args.kwargs == {"fail_open": False}
+        assert find_pr.await_args.kwargs["trust_cached_miss"] is False
+
+    async def test_unreadable_tracker_state_is_a_blocker(self) -> None:
+        engine = self._engine(TaskState.IN_PROGRESS)
+        engine._adapter.get_state = AsyncMock(side_effect=RuntimeError("HTTP 502"))
+        assert await engine.stuck_reset_blockers(42) == ["its tracker state could not be read"]
+
+    async def test_no_repository_is_a_blocker(self) -> None:
+        engine = self._engine(TaskState.IN_PROGRESS)
+        engine._adapter.repo = ""
+        with patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None):
+            blockers = await engine.stuck_reset_blockers(42)
+        assert blockers == ["no repository is configured, so an open PR cannot be ruled out"]
+
+    @staticmethod
+    def _with_last_run(engine: TaskProgressionEngine) -> None:
+        last_run = MagicMock(id=7, role="developer")
+        session = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = last_run
+        session.execute = AsyncMock(return_value=result)
+        engine._session_factory = MagicMock(return_value=session)
+
+    @pytest.mark.parametrize(("emit_feed", "emitted"), [(True, 1), (False, 0)])
+    async def test_stale_reset_emits_its_own_line_only_when_asked(self, emit_feed: bool, emitted: int) -> None:
+        import sova.dashboard.services.agent_recovery as recovery
+
+        engine = self._engine(TaskState.IN_PROGRESS)
+        self._with_last_run(engine)
+        with (
+            patch.object(recovery, "rollback_issue_state", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.services.feed_service.emit_safe") as emit,
+        ):
+            result = await engine._execute_stale_reset(42, emit_feed=emit_feed)
+        assert result == {"reset": True, "issue": 42}
+        assert emit.call_count == emitted
+
+    async def test_stale_reset_that_did_not_move_the_issue_is_an_error(self) -> None:
+        import sova.dashboard.services.agent_recovery as recovery
+
+        engine = self._engine(TaskState.IN_PROGRESS)
+        self._with_last_run(engine)
+        with (
+            patch.object(recovery, "rollback_issue_state", new_callable=AsyncMock, return_value=False),
+            patch("sova.dashboard.services.feed_service.emit_safe") as emit,
+        ):
+            result = await engine._execute_stale_reset(42)
+        assert "reset" not in result
+        assert result["error"].startswith("Rolling back #42 via run 7 did not move it")
+        emit.assert_not_called()
+
+
+class TestAlreadyRunningFailClosed:
+    """check_already_running(fail_open=False) blocks when the check itself fails; the default still fails open."""
+
+    @staticmethod
+    def _broken_factory() -> MagicMock:
+        session = AsyncMock()
+        session.__aenter__ = AsyncMock(side_effect=RuntimeError("database is locked"))
+        session.__aexit__ = AsyncMock(return_value=False)
+        return MagicMock(return_value=session)
+
+    async def test_default_fails_open(self) -> None:
+        from sova.supervisor.gates.already_running import check_already_running
+
+        assert await check_already_running(42, self._broken_factory()) is None
+
+    async def test_fail_closed_blocks_on_an_unknown_answer(self) -> None:
+        from sova.supervisor.gates.already_running import check_already_running
+
+        block = await check_already_running(42, self._broken_factory(), fail_open=False)
+        assert block == BlockReason(gate="already_running", detail="Whether an agent is running for #42 is unknown")
+
+
+class TestStuckResetAdapterWithoutRepo:
+    """A Jira adapter has no repo or github_user: the PR check uses the configured ones instead of crashing."""
+
+    async def test_the_configured_repo_and_user_are_used(self) -> None:
+        class _JiraLike:
+            get_state = AsyncMock(return_value=TaskState.IN_PROGRESS)
+
+        engine = _make_engine(
+            adapter=_JiraLike(),  # type: ignore[arg-type]
+            project_overrides={"github_repo": "acme/widgets", "github_user": "octo"},
+        )
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked", new_callable=AsyncMock, return_value=None
+            ) as find_pr,
+        ):
+            assert await engine.stuck_reset_blockers(42) == []
+        find_pr.assert_awaited_once_with("42", repo="acme/widgets", github_user="octo", trust_cached_miss=False)
+
+    async def test_no_repository_anywhere_is_a_blocker_not_a_crash(self) -> None:
+        class _JiraLike:
+            get_state = AsyncMock(return_value=TaskState.IN_PROGRESS)
+
+        engine = _make_engine(adapter=_JiraLike())  # type: ignore[arg-type]
+        with patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None):
+            blockers = await engine.stuck_reset_blockers(42)
+        assert blockers == ["no repository is configured, so an open PR cannot be ruled out"]
