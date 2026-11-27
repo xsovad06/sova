@@ -15,6 +15,15 @@ from sova.cli.commands.admin import (
     _costs,
     _status,
 )
+from sova.git.worktree import GCEntry
+
+
+def _worktree_entries(count: int) -> list[GCEntry]:
+    return [GCEntry(path=f"/wt/{n}", branch=f"feat/issue-{n}", reason="issue is closed") for n in range(count)]
+
+
+def _branch_entries(count: int) -> list[GCEntry]:
+    return [GCEntry(path="", branch=f"feat/issue-{n}", reason="issue is closed") for n in range(count)]
 
 
 def _mock_session_ctx(execute_results):
@@ -134,7 +143,7 @@ class TestCleanupCommand:
     async def test_cleanup_dry_run(self, tmp_path: Path) -> None:
         from sova.git.worktree import GCResult
 
-        gc = GCResult(worktrees_removed=1)
+        gc = GCResult(removed_worktrees=_worktree_entries(1))
         with (
             patch("sova.git.worktree.cleanup_by_issue_state", new_callable=AsyncMock, return_value=gc),
             patch("sova.cli.commands.admin.console") as mock_console,
@@ -146,7 +155,7 @@ class TestCleanupCommand:
         """Worktree removal is not gated on --all; only branch deletion is."""
         from sova.git.worktree import GCResult
 
-        gc = GCResult(worktrees_removed=2)
+        gc = GCResult(removed_worktrees=_worktree_entries(2))
         with (
             patch("sova.git.worktree.cleanup_by_issue_state", new_callable=AsyncMock, return_value=gc) as mock_gc,
             patch("sova.cli.commands.admin.console") as mock_console,
@@ -176,7 +185,7 @@ class TestCleanupRunAll:
     async def test_run_all_dry_run(self, tmp_path: Path) -> None:
         from sova.git.worktree import GCResult
 
-        gc = GCResult(worktrees_removed=2, branches_removed=1)
+        gc = GCResult(removed_worktrees=_worktree_entries(2), removed_branches=_branch_entries(1))
         with (
             patch("sova.cli.commands.admin.console") as mock_console,
             patch("sova.git.worktree.cleanup_by_issue_state", new_callable=AsyncMock, return_value=gc) as mock_gc,
@@ -189,7 +198,7 @@ class TestCleanupRunAll:
     async def test_run_all_removes_items(self, tmp_path: Path) -> None:
         from sova.git.worktree import GCResult
 
-        gc = GCResult(worktrees_removed=1, branches_removed=3)
+        gc = GCResult(removed_worktrees=_worktree_entries(1), removed_branches=_branch_entries(3))
         with (
             patch("sova.cli.commands.admin.console") as mock_console,
             patch("sova.git.worktree.cleanup_by_issue_state", new_callable=AsyncMock, return_value=gc),
@@ -235,6 +244,47 @@ class TestCleanupRunAll:
             output = " ".join(str(c) for c in mock_console.print.call_args_list)
             assert "Failed to delete branch" in output
 
+    async def test_named_entries_and_skips_are_listed(self, tmp_path: Path) -> None:
+        from sova.git.worktree import GCResult
+
+        gc = GCResult(
+            removed_worktrees=[GCEntry(path="/wt/42", branch="feat/issue-42", reason="issue #42 is closed")],
+            removed_branches=[GCEntry(path="", branch="feat/issue-42", reason="issue #42 is closed")],
+            skipped=[GCEntry(path="/wt/7", branch="feat/issue-7", reason="it has uncommitted changes")],
+        )
+        with (
+            patch("sova.cli.commands.admin.console") as mock_console,
+            patch("sova.git.worktree.cleanup_by_issue_state", new_callable=AsyncMock, return_value=gc),
+        ):
+            await _cleanup(project_dir=tmp_path, dry_run=True, clean_logs=False, run_all=True)
+        output = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "Would remove 1 worktree(s) and 1 branch(es)" in output
+        assert "worktree /wt/42 (feat/issue-42): issue #42 is closed" in output
+        assert "branch feat/issue-42: issue #42 is closed" in output
+        assert "skipped /wt/7: it has uncommitted changes" in output
+
+    async def test_paths_and_branches_print_as_literal_text(self, tmp_path: Path) -> None:
+        """A path holding Rich markup such as [/red] must not be parsed (it would raise after the removal)."""
+        from rich.console import Console
+
+        from sova.git.worktree import GCResult
+
+        gc = GCResult(
+            removed_worktrees=[GCEntry(path="/wt/[/red]", branch="feat/[b]", reason="issue #42 is closed")],
+            skipped=[GCEntry(path="/wt/[/x]", branch="", reason="it has uncommitted changes")],
+            stashes_found=["stash@{0}: On feat/[/y]: wip"],
+        )
+        recording = Console(record=True, width=200)
+        with (
+            patch("sova.cli.commands.admin.console", recording),
+            patch("sova.git.worktree.cleanup_by_issue_state", new_callable=AsyncMock, return_value=gc),
+        ):
+            await _cleanup(project_dir=tmp_path, dry_run=True, clean_logs=False, run_all=True)
+        output = recording.export_text()
+        assert "worktree /wt/[/red] (feat/[b]): issue #42 is closed" in output
+        assert "skipped /wt/[/x]: it has uncommitted changes" in output
+        assert "stash@{0}: On feat/[/y]: wip" in output
+
 
 class TestCleanupCLIWiring:
     def test_all_flag_wires_to_cleanup_by_issue_state(self, tmp_path: Path) -> None:
@@ -244,7 +294,7 @@ class TestCleanupCLIWiring:
         from sova.git.worktree import GCResult
 
         runner = CliRunner()
-        gc = GCResult(worktrees_removed=1, branches_removed=2)
+        gc = GCResult(removed_worktrees=_worktree_entries(1), removed_branches=_branch_entries(2))
         with (
             patch("sova.cli.commands.admin.console"),
             patch("sova.git.worktree.cleanup_by_issue_state", new_callable=AsyncMock, return_value=gc) as mock_gc,

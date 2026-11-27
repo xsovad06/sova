@@ -4058,3 +4058,45 @@ class TestListOpenPrs:
         with patch("sova.git.pr.run", return_value=mock_result), patch("sova.git.pr.resolve_gh_env", return_value={}):
             result = await list_open_prs(repo="owner/repo")
         assert result == []
+
+
+class TestFindPRCachedMiss:
+    """find_pr_for_issue_checked(trust_cached_miss=False) looks a cached "no PR" up again but reuses a found PR."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_pr_cache(self) -> Iterator[None]:
+        """The lookup cache is module-level: cleared before and after each test so none leaks into another."""
+        from sova.git import pr
+
+        pr._find_pr_cache.clear()
+        yield
+        pr._find_pr_cache.clear()
+
+    async def test_a_cached_miss_is_looked_up_again(self) -> None:
+        import time
+
+        from sova.git import pr
+
+        pr._find_pr_cache[("acme/widgets", "", "42")] = (time.monotonic(), None)
+        found = pr.PRInfo(number=5, url="")
+        with (
+            patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.git.pr._find_pr_for_issue_impl", new_callable=AsyncMock, return_value=(found, False)) as impl,
+        ):
+            trusted = await pr.find_pr_for_issue_checked("42", repo="acme/widgets")
+            fresh = await pr.find_pr_for_issue_checked("42", repo="acme/widgets", trust_cached_miss=False)
+        assert trusted is None
+        assert fresh == found
+        impl.assert_awaited_once()
+
+    async def test_a_cached_hit_is_still_reused(self) -> None:
+        import time
+
+        from sova.git import pr
+
+        found = pr.PRInfo(number=5, url="")
+        pr._find_pr_cache[("acme/widgets", "", "42")] = (time.monotonic(), found)
+        with patch("sova.git.pr._find_pr_for_issue_impl", new_callable=AsyncMock) as impl:
+            result = await pr.find_pr_for_issue_checked("42", repo="acme/widgets", trust_cached_miss=False)
+        assert result == found
+        impl.assert_not_awaited()

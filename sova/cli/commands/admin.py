@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import TYPE_CHECKING, Annotated, Optional
 
 import typer
 from rich.console import Console
@@ -14,6 +14,9 @@ from sqlalchemy import func, select
 
 from sova.config.loader import load_config
 from sova.db.session import get_session
+
+if TYPE_CHECKING:
+    from sova.git.worktree import GCResult
 
 console = Console(stderr=True)
 
@@ -137,6 +140,22 @@ def cleanup(
     asyncio.run(_cleanup(project_dir=project, dry_run=dry_run, clean_logs=logs, run_all=all_))
 
 
+def _print_gc_entries(gc: GCResult) -> None:
+    """Print each named cleanup target, stash and error as literal text: a path or branch is never Rich markup."""
+    for entry in gc.removed_worktrees:
+        console.print(f"  worktree {entry.path} ({entry.branch or 'no branch'}): {entry.reason}", markup=False)
+    for entry in gc.removed_branches:
+        console.print(f"  branch {entry.branch}: {entry.reason}", markup=False)
+    for entry in gc.skipped:
+        console.print(f"  skipped {entry.path or entry.branch}: {entry.reason}", markup=False, style="yellow")
+    if gc.stashes_found:
+        console.print(f"Found {len(gc.stashes_found)} stash(es) (not auto-dropped):", style="yellow")
+        for stash in gc.stashes_found:
+            console.print(f"  {stash}", markup=False)
+    for err in gc.errors:
+        console.print(err, markup=False, style="red")
+
+
 async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool, run_all: bool = False) -> None:
     from sova.git.worktree import cleanup_by_issue_state
 
@@ -160,12 +179,7 @@ async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool,
         )
     else:
         console.print("[green]No stale worktrees or branches for closed issues.[/green]")
-    if gc.stashes_found:
-        console.print(f"[yellow]Found {len(gc.stashes_found)} stash(es) (not auto-dropped):[/yellow]")
-        for stash in gc.stashes_found:
-            console.print(f"  {stash}")
-    for err in gc.errors:
-        console.print(f"[red]{err}[/red]")
+    _print_gc_entries(gc)
     if gc.errors:
         raise typer.Exit(code=1)
 

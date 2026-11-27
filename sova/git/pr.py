@@ -251,7 +251,7 @@ async def _find_pr_for_issue_impl(
 
 
 async def _find_pr_for_issue_cached(
-    issue_id: str, *, repo: str, github_user: str, raise_on_failure: bool
+    issue_id: str, *, repo: str, github_user: str, raise_on_failure: bool, trust_cached_miss: bool = True
 ) -> PRInfo | None:
     """Shared cache/lookup path for find_pr_for_issue() and find_pr_for_issue_checked().
 
@@ -263,7 +263,7 @@ async def _find_pr_for_issue_cached(
     cache_key = (repo, github_user, issue_num)
     now = time.monotonic()
     cached = _find_pr_cache.get(cache_key)
-    if cached and (now - cached[0]) < _FIND_PR_CACHE_TTL:
+    if cached and (now - cached[0]) < _FIND_PR_CACHE_TTL and (trust_cached_miss or cached[1] is not None):
         return cached[1]
 
     log.info("git.find_pr_for_issue", issue=issue_id, repo=repo)
@@ -295,12 +295,18 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
     return await _find_pr_for_issue_cached(issue_id, repo=repo, github_user=github_user, raise_on_failure=False)
 
 
-async def find_pr_for_issue_checked(issue_id: str, *, repo: str, github_user: str = "") -> PRInfo | None:
+async def find_pr_for_issue_checked(
+    issue_id: str, *, repo: str, github_user: str = "", trust_cached_miss: bool = True
+) -> PRInfo | None:
     """Like :func:`find_pr_for_issue`, but raises :class:`PRLookupError` instead of
     silently returning ``None`` when the lookup could not be confirmed. Shares
     the same 90-second TTL cache, so no new uncached GitHub API call is added.
+    With ``trust_cached_miss=False`` a cached "no PR" is looked up again (a found PR is still reused), for a
+    caller that acts destructively on "no PR".
     """
-    return await _find_pr_for_issue_cached(issue_id, repo=repo, github_user=github_user, raise_on_failure=True)
+    return await _find_pr_for_issue_cached(
+        issue_id, repo=repo, github_user=github_user, raise_on_failure=True, trust_cached_miss=trust_cached_miss
+    )
 
 
 async def _search_prs_by_body(
