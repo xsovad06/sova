@@ -1101,13 +1101,31 @@ async def link_worktree_env(project_dir: Path, worktree_path: Path, copy_files: 
     An added ``.venv`` the caller did not ask for is skipped when git cannot be made to ignore it, since
     ``commit()`` would then refuse it.
     """
-    venv_link = worktree_path / VENV_DIR
     names = list(dict.fromkeys(copy_files))
-    # Also when ``copy_files`` already linked it: that link is just as visible to ``git add``.
-    if (project_dir / VENV_DIR).is_dir() and (venv_link.is_symlink() or not venv_link.exists()):
-        if await _exclude_venv_link(worktree_path) and VENV_DIR not in names:
-            names.append(VENV_DIR)
+    # Checked also when ``copy_files`` already names it: that link is just as visible to ``git add``.
+    if await _venv_link_wanted(project_dir, worktree_path) and VENV_DIR not in names:
+        names.append(VENV_DIR)
 
+    if _link_missing_entries(project_dir, worktree_path, names):
+        # A freshly copied ``.env`` lacks the override create_worktree() added to its own copy.
+        try:
+            _ensure_compose_project_name(project_dir, worktree_path)
+        except OSError:
+            log.warning("worktree.link_env.compose_project_name_failed", exc_info=True)
+
+
+async def _venv_link_wanted(project_dir: Path, worktree_path: Path) -> bool:
+    """True when the project's ``.venv`` may be linked into the worktree and git ignores the link."""
+    venv_link = worktree_path / VENV_DIR
+    if not (project_dir / VENV_DIR).is_dir():
+        return False
+    if not (venv_link.is_symlink() or not venv_link.exists()):
+        return False
+    return await _exclude_venv_link(worktree_path)
+
+
+def _link_missing_entries(project_dir: Path, worktree_path: Path, names: list[str]) -> bool:
+    """Link or copy each entry of *names* absent from the worktree; True when at least one was added."""
     copied = False
     for name in names:
         dst = worktree_path / name
@@ -1119,12 +1137,7 @@ async def link_worktree_env(project_dir: Path, worktree_path: Path, copy_files: 
             log.warning("worktree.link_env.entry_failed", file=name, exc_info=True)
             continue
         copied = copied or dst.is_symlink() or dst.exists()
-    if copied:
-        # A freshly copied ``.env`` lacks the override create_worktree() added to its own copy.
-        try:
-            _ensure_compose_project_name(project_dir, worktree_path)
-        except OSError:
-            log.warning("worktree.link_env.compose_project_name_failed", exc_info=True)
+    return copied
 
 
 async def get_primary_worktree_root(cwd: Path | None = None) -> Path:
