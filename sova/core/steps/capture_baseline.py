@@ -3,7 +3,9 @@
 Runs the project's test suite in the fresh worktree and stores per-test
 results as a JSON artifact. Downstream steps (ValidateStep, MonitorCIStep)
 diff current results against this baseline to distinguish true regressions
-from pre-existing failures.
+from pre-existing failures. It first links the project's ``.venv`` and
+``worktree.copy_files`` into the worktree, so the suite runs with the project's
+dependencies and records per-test results rather than an exit code.
 
 Non-fatal: a failed capture does not block the pipeline.
 """
@@ -16,6 +18,7 @@ from sova.core.check_cache import clear_marker, seed_outputs, snapshot_untracked
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.test_baseline import baseline_path, run_test_suite, save_baseline
+from sova.git.worktree import link_worktree_env
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.capture_baseline")
@@ -36,6 +39,14 @@ async def _seed_outputs(worktree: Path, pre_untracked: set[str] | None) -> None:
         await seed_outputs(worktree, pre_untracked)
     except Exception:  # noqa: BLE001 (seeding is advisory; a baseline run's outputs only cost a later reuse)
         log.warning("step.capture_baseline.seed_failed", exc_info=True)
+
+
+async def _link_env(ctx: ExecutionContext, worktree: Path) -> None:
+    """Link the worktree's environment before the baseline run (advisory: the run proceeds without it)."""
+    try:
+        await link_worktree_env(ctx.project_dir, worktree, ctx.config.worktree.copy_files)
+    except Exception:  # noqa: BLE001 (a missing link only degrades the baseline as it did before this step linked)
+        log.warning("step.capture_baseline.link_env_failed", exc_info=True)
 
 
 class CaptureBaselineStep(BaseStep):
@@ -59,6 +70,8 @@ class CaptureBaselineStep(BaseStep):
             log.info("step.capture_baseline.no_test_cmd")
             return StepResult(success=True, summary="No test command configured, skipping baseline")
 
+        await _link_env(ctx, ctx.worktree_dir)
+
         try:
             pre_untracked = await _snapshot_untracked(ctx.worktree_dir)
             snapshot = await run_test_suite(
@@ -72,7 +85,7 @@ class CaptureBaselineStep(BaseStep):
             ctx.test_baseline_path = path
 
             test_count = len(snapshot.tests)
-            mode_label = "per-test" if snapshot.mode == "per_test" else "exit-code only"
+            mode_label = "per-test" if snapshot.is_per_test else "exit-code only"
             summary = f"Baseline captured ({mode_label}, {test_count} tests, exit code {snapshot.exit_code})"
             log.info("step.capture_baseline.done", mode=snapshot.mode, tests=test_count)
             return StepResult(success=True, summary=summary)

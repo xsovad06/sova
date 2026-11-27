@@ -1058,6 +1058,75 @@ def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str
             log.debug("worktree.copy_file", file=filename)
 
 
+VENV_DIR = ".venv"
+
+
+async def _exclude_venv_link(worktree_path: Path) -> bool:
+    """Make git ignore a root ``.venv`` symlink in *worktree_path*; True when it is (or already was) ignored.
+
+    A ``.venv/`` ignore pattern matches only a directory, so a symlinked ``.venv`` would show as untracked
+    and ``commit()`` would refuse it as a suspicious path. When git does not already ignore it, ``/.venv``
+    is appended to ``info/exclude``. Git has no per-worktree exclude file: ``--git-path info/exclude``
+    resolves to the common git dir, so the line lands in the same repository-wide exclude file that
+    ``sova install`` writes, and applies to the primary checkout and every other worktree. That is
+    acceptable because the line is root-anchored (only the top-level ``.venv``), written only once (a
+    later call sees it through ``check-ignore``), never committed, and names a path SOVA never commits.
+    """
+    if (await run("git", "check-ignore", "-q", VENV_DIR, cwd=worktree_path)).success:
+        return True
+    result = await run("git", "rev-parse", "--git-path", "info/exclude", cwd=worktree_path)
+    git_path = result.stdout.strip() if result.success else ""
+    if not git_path:
+        log.warning("worktree.venv_exclude.no_git_path", path=str(worktree_path))
+        return False
+    exclude_path = worktree_path / git_path
+    try:
+        exclude_path.parent.mkdir(parents=True, exist_ok=True)
+        with exclude_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n/{VENV_DIR}\n")
+    except OSError:
+        log.warning("worktree.venv_exclude.write_failed", path=str(exclude_path), exc_info=True)
+        return False
+    log.info("worktree.venv_exclude.added", path=str(exclude_path))
+    return True
+
+
+async def link_worktree_env(project_dir: Path, worktree_path: Path, copy_files: list[str]) -> None:
+    """Supply the worktree's missing ``copy_files`` entries and the project's ``.venv`` link.
+
+    ``create_worktree`` links only ``copy_files``, so a project whose list omits ``.venv`` would run its
+    tests without the environment. Only an entry absent from the worktree is linked or copied: one that
+    is present (a link, a directory, or a ``.env`` that ``create_worktree`` gave a Compose project name)
+    is kept as it is. A missing source is skipped, and a failure on one entry does not stop the others.
+    An added ``.venv`` the caller did not ask for is skipped when git cannot be made to ignore it, since
+    ``commit()`` would then refuse it.
+    """
+    venv_link = worktree_path / VENV_DIR
+    names = list(dict.fromkeys(copy_files))
+    # Also when ``copy_files`` already linked it: that link is just as visible to ``git add``.
+    if (project_dir / VENV_DIR).is_dir() and (venv_link.is_symlink() or not venv_link.exists()):
+        if await _exclude_venv_link(worktree_path) and VENV_DIR not in names:
+            names.append(VENV_DIR)
+
+    copied = False
+    for name in names:
+        dst = worktree_path / name
+        if dst.is_symlink() or dst.exists():
+            continue
+        try:
+            _copy_worktree_files(project_dir, worktree_path, [name])
+        except OSError:
+            log.warning("worktree.link_env.entry_failed", file=name, exc_info=True)
+            continue
+        copied = copied or dst.is_symlink() or dst.exists()
+    if copied:
+        # A freshly copied ``.env`` lacks the override create_worktree() added to its own copy.
+        try:
+            _ensure_compose_project_name(project_dir, worktree_path)
+        except OSError:
+            log.warning("worktree.link_env.compose_project_name_failed", exc_info=True)
+
+
 async def get_primary_worktree_root(cwd: Path | None = None) -> Path:
     """Return the primary (main) worktree root, even when called from a linked worktree.
 

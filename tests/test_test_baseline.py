@@ -22,6 +22,7 @@ from sova.core.test_baseline import (
     run_test_suite,
     save_baseline,
 )
+from sova.utils.shell import run
 
 # Uses the shared per-worker in-memory DB, emptied before each test
 # (see ``tests/conftest.py:reset_db_rows``).
@@ -45,6 +46,31 @@ def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
     }
     defaults.update(kwargs)
     return ExecutionContext(**defaults)
+
+
+async def _git_project_with_worktree(tmp_path: Path, ignore_line: str) -> tuple[Path, Path]:
+    """A one-commit repository ignoring *ignore_line*, plus a linked worktree of it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    for argv in (
+        ("git", "init"),
+        ("git", "config", "user.email", "test@example.com"),
+        ("git", "config", "user.name", "Test User"),
+        ("git", "config", "commit.gpgsign", "false"),
+    ):
+        assert (await run(*argv, cwd=project)).success, argv
+    (project / ".gitignore").write_text(f"{ignore_line}\n", encoding="utf-8")
+    assert (await run("git", "add", ".gitignore", cwd=project)).success
+    assert (await run("git", "commit", "-m", "initial", cwd=project)).success
+    worktree = tmp_path / "wt"
+    assert (await run("git", "worktree", "add", str(worktree), "-b", "feat/x", cwd=project)).success
+    return project, worktree
+
+
+def _common_exclude_lines(project: Path) -> list[str]:
+    """Lines of the repository-wide exclude file every worktree of *project* shares."""
+    exclude = project / ".git" / "info" / "exclude"
+    return exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
 
 
 # BaselineSnapshot serialization
@@ -441,6 +467,141 @@ class TestCaptureBaselineStep:
 
         mock_clear.assert_called_once_with(worktree)
 
+    @pytest.mark.parametrize("prelinked", [False, True])
+    @pytest.mark.parametrize("ignore_line", [".venv/", ".venv"])
+    async def test_links_venv_before_the_run_and_keeps_it_untracked(
+        self, tmp_path: Path, ignore_line: str, prelinked: bool
+    ) -> None:
+        from sova.core.steps.capture_baseline import CaptureBaselineStep
+
+        project, worktree = await _git_project_with_worktree(tmp_path, ignore_line)
+        (project / ".venv").mkdir()
+        if prelinked:  # create_worktree already linked it because copy_files lists ".venv"
+            (worktree / ".venv").symlink_to(project / ".venv")
+        ctx = _make_ctx(tmp_path, project_dir=project, worktree_dir=worktree)
+
+        async def fake_suite(**kwargs: object) -> BaselineSnapshot:
+            if not (worktree / ".venv").is_symlink():
+                return BaselineSnapshot(mode="exit_code", exit_code=4, tests=[])
+            return BaselineSnapshot(mode="per_test", exit_code=0, tests=[SingleTestOutcome("t1", "passed")])
+
+        with patch("sova.core.steps.capture_baseline.run_test_suite", side_effect=fake_suite):
+            result = await CaptureBaselineStep().execute(ctx)
+
+        assert "per-test, 1 tests" in result.summary
+        status = await run("git", "status", "--porcelain", "--untracked-files=all", cwd=worktree)
+        assert ".venv" not in status.stdout
+        # Git has no per-worktree exclude file: the line lands in the common git dir, shared with the
+        # primary checkout, and only when the project's own ignore rule does not already cover a symlink.
+        assert ("/.venv" in _common_exclude_lines(project)) is (ignore_line == ".venv/")
+
+    async def test_no_project_venv_writes_no_exclude(self, tmp_path: Path) -> None:
+        from sova.core.steps.capture_baseline import CaptureBaselineStep
+
+        project, worktree = await _git_project_with_worktree(tmp_path, ".venv/")
+        ctx = _make_ctx(tmp_path, project_dir=project, worktree_dir=worktree)
+
+        with patch("sova.core.steps.capture_baseline.run_test_suite", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = BaselineSnapshot(mode="exit_code", exit_code=0, tests=[])
+            result = await CaptureBaselineStep().execute(ctx)
+
+        assert result.success
+        mock_run.assert_awaited_once()
+        assert not (worktree / ".venv").exists()
+        assert "/.venv" not in _common_exclude_lines(project)
+
+    async def test_supplies_missing_copy_files_entries(self, tmp_path: Path) -> None:
+        from sova.core.steps.capture_baseline import CaptureBaselineStep
+
+        project = tmp_path / "project"
+        (project / "fixtures").mkdir(parents=True)
+        (project / ".env").write_text("A=1\n", encoding="utf-8")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        config = ProjectConfig()
+        config.worktree.copy_files = [".env", "fixtures"]
+        ctx = _make_ctx(tmp_path, project_dir=project, worktree_dir=worktree, config=config)
+
+        with patch("sova.core.steps.capture_baseline.run_test_suite", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = BaselineSnapshot(mode="exit_code", exit_code=0, tests=[])
+            result = await CaptureBaselineStep().execute(ctx)
+
+        assert result.success
+        assert (worktree / ".env").read_text(encoding="utf-8") == "A=1\n"
+        assert (worktree / "fixtures").is_symlink()
+
+    async def test_file_blocking_the_venv_link_is_non_fatal(self, tmp_path: Path) -> None:
+        from sova.core.steps.capture_baseline import CaptureBaselineStep
+
+        project = tmp_path / "project"
+        (project / ".venv").mkdir(parents=True)
+        (project / ".env").write_text("A=1\n", encoding="utf-8")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / ".venv").write_text("not a directory", encoding="utf-8")
+        config = ProjectConfig()
+        config.worktree.copy_files = [".venv", ".env"]
+        ctx = _make_ctx(tmp_path, project_dir=project, worktree_dir=worktree, config=config)
+
+        with patch("sova.core.steps.capture_baseline.run_test_suite", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = BaselineSnapshot(mode="exit_code", exit_code=0, tests=[])
+            result = await CaptureBaselineStep().execute(ctx)
+
+        assert result.success
+        assert ctx.test_baseline_path is not None
+        assert (worktree / ".venv").is_file()
+        assert (worktree / ".env").read_text(encoding="utf-8") == "A=1\n"
+
+
+class TestLinkWorktreeEnv:
+    """``link_worktree_env()``: what the baseline step adds to a worktree, and what it leaves alone."""
+
+    @pytest.mark.parametrize(("copy_files", "linked"), [([], False), ([".venv"], True)])
+    async def test_failed_exclude_skips_an_unrequested_venv(
+        self, tmp_path: Path, copy_files: list[str], linked: bool
+    ) -> None:
+        from sova.git.worktree import link_worktree_env
+
+        project = tmp_path / "project"
+        (project / ".venv").mkdir(parents=True)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        with patch("sova.git.worktree._exclude_venv_link", new_callable=AsyncMock, return_value=False):
+            await link_worktree_env(project, worktree, copy_files)
+
+        assert (worktree / ".venv").is_symlink() is linked
+
+    @pytest.mark.parametrize("worktree_has_env", [True, False])
+    async def test_keeps_the_compose_project_name(self, tmp_path: Path, worktree_has_env: bool) -> None:
+        from sova.git.worktree import link_worktree_env
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("A=1\n", encoding="utf-8")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        if worktree_has_env:  # as create_worktree() leaves it
+            (worktree / ".env").write_text("A=1\nCOMPOSE_PROJECT_NAME=project\n", encoding="utf-8")
+
+        await link_worktree_env(project, worktree, [".env"])
+
+        assert (worktree / ".env").read_text(encoding="utf-8") == "A=1\nCOMPOSE_PROJECT_NAME=project\n"
+
+    async def test_rejects_a_path_outside_the_project(self, tmp_path: Path) -> None:
+        from sova.git.worktree import link_worktree_env
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (tmp_path / "escape.txt").write_text("secret", encoding="utf-8")
+        worktree = tmp_path / "nest" / "wt"
+        worktree.mkdir(parents=True)
+
+        await link_worktree_env(project, worktree, ["../escape.txt"])
+
+        assert not (tmp_path / "nest" / "escape.txt").exists()
+
 
 # ValidateStep regression checking
 
@@ -543,6 +704,27 @@ class TestValidateStepRegressions:
         # Verify run_test_suite was called with worktree dir, not project dir
         mock_test.assert_called_once()
         assert mock_test.call_args.kwargs["cwd"] == worktree
+
+    @pytest.mark.parametrize(("mode", "runs_suite"), [("exit_code", False), ("per_test", True)])
+    async def test_only_a_per_test_baseline_runs_the_suite(self, tmp_path: Path, mode: str, runs_suite: bool) -> None:
+        from sova.core.steps.validate import ValidateStep
+
+        worktree = tmp_path / "worktree"
+        save_baseline(BaselineSnapshot(mode=mode, exit_code=0, tests=[]), worktree)
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
+
+        with (
+            patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test,
+            patch("sova.core.steps.validate.log") as mock_log,
+        ):
+            mock_test.return_value = BaselineSnapshot(mode="per_test", exit_code=0, tests=[])
+            gate = await ValidateStep().verify_output(ctx)
+
+        assert gate.passed
+        assert mock_test.await_count == (1 if runs_suite else 0)
+        logged = [c.args[0] for c in mock_log.info.call_args_list]
+        skip_logged = "step.validate.regression_check_skipped" in logged
+        assert skip_logged is not runs_suite
 
     async def test_regression_check_failure_non_fatal(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep

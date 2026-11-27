@@ -41,6 +41,11 @@ class BaselineSnapshot:
     exit_code: int
     tests: list[SingleTestOutcome]
 
+    @property
+    def is_per_test(self) -> bool:
+        """Whether this snapshot records per-test outcomes, the only mode a regression diff can compare."""
+        return self.mode == "per_test"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
@@ -173,11 +178,12 @@ def diff_results(
 ) -> RegressionReport:
     """Compare current test results against the baseline.
 
-    Only meaningful when both snapshots are in per_test mode.
-    For exit_code mode, returns empty report (suite-level comparison
-    is done by the caller via exit codes).
+    Only meaningful when both snapshots are in per_test mode. An exit_code
+    snapshot cannot be compared and yields an empty report, so a caller
+    checks ``is_per_test`` first: ``ValidateStep`` skips the regression run
+    entirely for an exit-code baseline rather than comparing exit codes.
     """
-    if baseline.mode != "per_test" or current.mode != "per_test":
+    if not baseline.is_per_test or not current.is_per_test:
         return RegressionReport(regressions=[], fixed=[], new_failures=[])
 
     baseline_by_id = {t.nodeid: t for t in baseline.tests}

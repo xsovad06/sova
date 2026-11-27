@@ -456,6 +456,10 @@ class ValidateStep(BaseStep):
         baseline = load_baseline(test_dir)
         if baseline is None:
             return None
+        if not baseline.is_per_test:
+            # diff_results() cannot compare this baseline, so running the suite again would be wasted.
+            log.info("step.validate.regression_check_skipped", reason="baseline not per-test", mode=baseline.mode)
+            return None
 
         test_cmd = ctx.config.test_cmd
         if not test_cmd or not test_cmd.strip():
