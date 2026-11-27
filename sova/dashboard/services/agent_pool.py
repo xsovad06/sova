@@ -230,6 +230,11 @@ def _get_project_agents(slug: str | None = None) -> ProjectAgents:
     return pa
 
 
+def current_project_dir() -> Path:
+    """The resolved project directory of the agent pool the current request's project context selects."""
+    return Path(_get_project_agents().project_dir)
+
+
 def read_max_parallel(project_dir: Path) -> int:
     """Read max_parallel_agents from config, falling back to dataclass default."""
     try:

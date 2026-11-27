@@ -703,7 +703,68 @@ def _emit_rollback_stranded_event(run_id: int, issue_number: str, reason: str) -
         log.debug("rollback.stranded_emit_failed", exc_info=True)
 
 
-async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> None:
+async def _rollback_triage_labels(adapter: TaskAdapter, issue_number: str) -> bool:
+    """Remove every agent label but agent:on-hold after a failed triage run.
+
+    True only when at least one label was removed and none failed, so a partial removal is never reported as done.
+    """
+    from sova.supervisor.labels import is_on_hold
+
+    removed = 0
+    failed = False
+    try:
+        task = await adapter.get_task(issue_number)
+        agent_labels = [label for label in task.labels if label.startswith("agent:") and not is_on_hold([label])]
+        for label in agent_labels:
+            await adapter.remove_label(issue_number, label)
+            removed += 1
+        log.info("rollback.triage_labels_removed", issue=issue_number, count=removed)
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
+        # A stale agent label is left behind, so the rollback did not finish even if some were removed.
+        log.warning("rollback.triage_failed", issue=issue_number, removed=removed, exc_info=True)
+        failed = True
+    return removed > 0 and not failed
+
+
+async def _developer_rollback_target(
+    adapter: TaskAdapter, run_id: int, issue_number: str, pr_number: int | None, prior_state_raw: object
+) -> TaskState | None:
+    """The state a failed developer run's issue goes back to, or None when the rollback must be skipped."""
+    from sova.adapters.base import TaskState
+
+    if pr_number:
+        return TaskState.IN_REVIEW
+    # Undo only the in-progress state this run set, by restoring the state recorded before the
+    # transition. Nothing recorded means the run never moved the issue (a Gate 3 refusal, a Resume on
+    # an issue already in progress): "restoring" researched would promote a triaged issue past
+    # research it never had. An unreadable state is unknown, not "not in progress".
+    prior_state = _parse_task_state(prior_state_raw)
+    if prior_state is TaskState.IN_PROGRESS:
+        log.info("rollback.skipped_already_in_progress", run_id=run_id, issue=issue_number)
+        return None
+    if prior_state is None:
+        # No record: a run launched before the record existed, or one whose state was unreadable at
+        # launch (so the label was never moved). Say so when the issue is nonetheless in progress,
+        # rather than leave it without a word.
+        log.info("rollback.skipped_no_prior_state", run_id=run_id, issue=issue_number)
+        if await _issue_in_progress(adapter, issue_number):
+            _emit_rollback_stranded_event(run_id, issue_number, "no tracker state was recorded before it started")
+        return None
+    in_progress = await _issue_in_progress(adapter, issue_number)
+    if in_progress is None:
+        await asyncio.sleep(_STATE_READ_RETRY_DELAY_S)
+        in_progress = await _issue_in_progress(adapter, issue_number)
+    if in_progress is None:
+        log.warning("rollback.skipped_state_unknown", run_id=run_id, issue=issue_number)
+        _emit_rollback_stranded_event(run_id, issue_number, "the tracker state could not be read")
+        return None
+    if not in_progress:
+        log.info("rollback.skipped_not_in_progress", run_id=run_id, issue=issue_number)
+        return None
+    return prior_state
+
+
+async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> bool:
     """Roll back issue state on agent failure.
 
     Maps the failed agent's role to the appropriate prior state and calls
@@ -720,6 +781,10 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
       (``PRIOR_STATE_KEY``), and only while the tracker still shows in progress. A run that recorded no prior
       state (a Resume on an issue already in progress, a refused or force-started run that never moved it) and
       an unreadable tracker state (read twice, then surfaced as a feed event) both leave the issue alone.
+
+    Returns True only when it fully moved the issue (a state transition, or triage's removal of every agent label);
+    every skip, a triage run with no label to remove, and every failure returns False, including a triage removal
+    that failed partway (some labels removed, one left), so a caller never reports a rollback that did not finish.
     """
     try:
         from sqlalchemy import select
@@ -733,12 +798,12 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
         async with await get_session(project_dir=project_dir) as session:
             task_run = await session.get(TaskRun, run_id)
             if task_run is None:
-                return
+                return False
 
             issue_number = task_run.issue_number
             if not issue_number:
                 log.debug("rollback.no_issue", run_id=run_id)
-                return
+                return False
 
             role = task_run.role or ""
             pr_number = task_run.pr_number
@@ -757,7 +822,7 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
             result = await session.execute(stmt)
             if result.scalar_one_or_none() is not None:
                 log.info("rollback.skipped_concurrent_run", run_id=run_id, issue=issue_number)
-                return
+                return False
 
         # Load adapter outside DB session (GitHub API calls)
         config = load_config(project_dir)
@@ -769,19 +834,7 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
         # Special case: triage role removes all agent: labels except agent:on-hold,
         # which a lead or /find-task set, never triage, so a failed run must not lift it
         if role_clean == "triage":
-            from sova.supervisor.labels import is_on_hold
-
-            try:
-                task = await adapter.get_task(issue_number)
-                agent_labels = [
-                    label for label in task.labels if label.startswith("agent:") and not is_on_hold([label])
-                ]
-                for label in agent_labels:
-                    await adapter.remove_label(issue_number, label)
-                log.info("rollback.triage_labels_removed", issue=issue_number, count=len(agent_labels))
-            except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
-                log.warning("rollback.triage_failed", issue=issue_number, exc_info=True)
-            return
+            return await _rollback_triage_labels(adapter, issue_number)
 
         # Map role to rollback state
         rollback_state_map = {
@@ -793,49 +846,22 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
 
         # Developer maps to different states based on PR existence
         if role_clean == "developer":
-            target_state = TaskState.IN_REVIEW if pr_number else None
-            if not pr_number:
-                # Undo only the in-progress state this run set, by restoring the state recorded before the
-                # transition. Nothing recorded means the run never moved the issue (a Gate 3 refusal, a Resume on
-                # an issue already in progress): "restoring" researched would promote a triaged issue past
-                # research it never had. An unreadable state is unknown, not "not in progress".
-                prior_state = _parse_task_state(prior_state_raw)
-                if prior_state is TaskState.IN_PROGRESS:
-                    log.info("rollback.skipped_already_in_progress", run_id=run_id, issue=issue_number)
-                    return
-                if prior_state is None:
-                    # No record: a run launched before the record existed, or one whose state was unreadable at
-                    # launch (so the label was never moved). Say so when the issue is nonetheless in progress,
-                    # rather than leave it without a word.
-                    log.info("rollback.skipped_no_prior_state", run_id=run_id, issue=issue_number)
-                    if await _issue_in_progress(adapter, issue_number):
-                        _emit_rollback_stranded_event(
-                            run_id, issue_number, "no tracker state was recorded before it started"
-                        )
-                    return
-                in_progress = await _issue_in_progress(adapter, issue_number)
-                if in_progress is None:
-                    await asyncio.sleep(_STATE_READ_RETRY_DELAY_S)
-                    in_progress = await _issue_in_progress(adapter, issue_number)
-                if in_progress is None:
-                    log.warning("rollback.skipped_state_unknown", run_id=run_id, issue=issue_number)
-                    _emit_rollback_stranded_event(run_id, issue_number, "the tracker state could not be read")
-                    return
-                if not in_progress:
-                    log.info("rollback.skipped_not_in_progress", run_id=run_id, issue=issue_number)
-                    return
-                target_state = prior_state
+            target_state = await _developer_rollback_target(adapter, run_id, issue_number, pr_number, prior_state_raw)
+            if target_state is None:
+                return False
         else:
             target_state = rollback_state_map.get(role_clean)
 
         if target_state is None:
             log.debug("rollback.unknown_role", role=role, issue=issue_number)
-            return
+            return False
 
         await adapter.transition_state(issue_number, target_state)
         log.info("rollback.completed", run_id=run_id, issue=issue_number, target_state=target_state.value)
+        return True
     except Exception:  # noqa: BLE001 (config load, DB read and tracker call each fail differently)
         log.warning("rollback.failed", run_id=run_id, exc_info=True)
+        return False
 
 
 # Window matching the banner's own copy ("interrupted when the dashboard was

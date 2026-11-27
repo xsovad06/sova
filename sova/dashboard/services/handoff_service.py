@@ -42,6 +42,11 @@ def _resolve_project_dir() -> Path:
     return resolve_project_dir(default_project_dir=_default_project_dir)
 
 
+def current_project_dir() -> Path:
+    """The project directory the handoff store resolves for the current request (public form of the resolver)."""
+    return _resolve_project_dir()
+
+
 def _control_dir(project_dir: Path | None = None) -> Path | None:
     d = project_dir or _resolve_project_dir()
     if d is None:

@@ -63,9 +63,10 @@ class TestRollbackIssueState:
 
         with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
-                await rollback_issue_state(task_run.id, tmp_path)
+                moved = await rollback_issue_state(task_run.id, tmp_path)
 
         mock_adapter.transition_state.assert_awaited_once_with("42", TaskState.RESEARCHED)
+        assert moved is True
 
     @pytest.mark.parametrize("state", [TaskState.TRIAGED, TaskState.BACKLOG, TaskState.RESEARCHED])
     async def test_rollback_developer_leaves_a_state_it_is_no_longer_in(
@@ -88,9 +89,10 @@ class TestRollbackIssueState:
 
         with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
-                await rollback_issue_state(task_run.id, tmp_path)
+                moved = await rollback_issue_state(task_run.id, tmp_path)
 
         mock_adapter.transition_state.assert_not_awaited()
+        assert moved is False
 
     @pytest.mark.parametrize(
         ("assessment", "why"),
@@ -331,6 +333,37 @@ class TestRollbackIssueState:
         assert mock_adapter.remove_label.call_count == 2
         mock_adapter.remove_label.assert_any_call("42", "agent:triaged")
         mock_adapter.remove_label.assert_any_call("42", "agent:in-progress")
+
+    @pytest.mark.parametrize(
+        ("labels", "remove_effect", "moved"),
+        [
+            pytest.param(["type:feature"], None, False, id="nothing-to-remove"),
+            pytest.param(["agent:triaged", "agent:ready"], None, True, id="all-removed"),
+            pytest.param(["agent:triaged", "agent:ready"], [None, RuntimeError("HTTP 502")], False, id="partial"),
+            pytest.param(["agent:triaged"], [RuntimeError("HTTP 502")], False, id="none-removed"),
+        ],
+    )
+    async def test_rollback_triage_reports_whether_it_moved_the_issue(
+        self,
+        session: AsyncSession,
+        mock_adapter: MagicMock,
+        mock_config: MagicMock,
+        tmp_path: Path,
+        labels: list[str],
+        remove_effect: list | None,
+        moved: bool,
+    ) -> None:
+        from sova.dashboard.services.agent_recovery import rollback_issue_state
+
+        task_run = TaskRun(issue_number="42", role="triage", status="failed", started_at=datetime.now(timezone.utc))
+        session.add(task_run)
+        await session.commit()
+        mock_adapter.remove_label = AsyncMock(side_effect=remove_effect)
+        mock_adapter.get_task = AsyncMock(return_value=MagicMock(labels=labels))
+
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
+            with patch("sova.adapters.create_adapter", return_value=mock_adapter):
+                assert await rollback_issue_state(task_run.id, tmp_path) is moved
 
     async def test_rollback_triage_keeps_the_on_hold_label(
         self, session: AsyncSession, mock_adapter: MagicMock, mock_config: MagicMock, tmp_path: Path
