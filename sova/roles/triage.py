@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -105,6 +105,15 @@ class QualityScore:
 
     def meets_threshold(self, min_score: int = 4) -> bool:
         return self.total >= min_score and self.has_acceptance_criteria
+
+    @classmethod
+    def max_total(cls) -> int:
+        """The highest ``total``: every dimension met, derived from the scoring rules so a reweight follows."""
+        return cls(**{f.name: True for f in fields(cls)}).total
+
+
+# The highest QualityScore.total (8 today: acceptance criteria count twice).
+MAX_QUALITY_SCORE = QualityScore.max_total()
 
 
 def compute_quality_score(body: str) -> QualityScore:

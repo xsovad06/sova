@@ -4897,6 +4897,14 @@ class TestTriageAssessWithLLM:
 class TestQualityScore:
     """Tests for the deterministic quality scoring function."""
 
+    def test_max_quality_score_is_the_total_with_every_dimension_met(self) -> None:
+        from dataclasses import fields
+
+        from sova.roles.triage import MAX_QUALITY_SCORE, QualityScore
+
+        perfect = QualityScore(**{f.name: True for f in fields(QualityScore)})
+        assert perfect.total == MAX_QUALITY_SCORE
+
     def test_empty_body_scores_zero(self) -> None:
         from sova.roles.triage import compute_quality_score
 
