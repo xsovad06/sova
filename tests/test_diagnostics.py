@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +20,7 @@ from sova.utils.diagnostics import (
     _check_awareness_providers,
     _check_claude_cli,
     _check_database_schema,
+    _check_dependency_lock,
     _check_gh_cli,
     _check_git,
     _check_git_hooks,
@@ -963,6 +965,65 @@ def test_check_rtk_missing() -> None:
     assert check.name == "rtk"
     assert check.passed is False
     assert check.required is False
+
+
+# ---------------------------------------------------------------------------
+# Dependency lock drift
+# ---------------------------------------------------------------------------
+
+_PACKAGING = importlib.metadata.version("packaging")
+
+
+def test_check_dependency_lock_is_silent_without_a_lock(tmp_path: Path) -> None:
+    """A wheel install ships no uv.lock, so there is nothing to compare and no row."""
+    assert _check_dependency_lock(tmp_path / "uv.lock") == []
+
+
+@pytest.mark.parametrize(
+    ("locked_versions", "passed"),
+    [
+        pytest.param([_PACKAGING], True, id="installed-matches-lock"),
+        pytest.param(["0.0.1"], False, id="installed-outside-lock"),
+        pytest.param(["0.0.1", _PACKAGING], True, id="any-platform-fork-matches"),
+    ],
+)
+def test_check_dependency_lock_compares_installed_versions(
+    tmp_path: Path, locked_versions: list[str], passed: bool
+) -> None:
+    entries = [f'[[package]]\nname = "packaging"\nversion = "{version}"\n' for version in locked_versions]
+    # A locked package that is not installed, and the editable root with no version, are both ignored.
+    entries.append('[[package]]\nname = "sova-not-an-installed-package"\nversion = "1.0"\n')
+    entries.append('[[package]]\nname = "sova"\nsource = { editable = "." }\n')
+    lock = tmp_path / "uv.lock"
+    lock.write_text("version = 1\n\n" + "\n".join(entries), encoding="utf-8")
+
+    [check] = _check_dependency_lock(lock)
+
+    assert check.name == "dependency lock"
+    assert check.required is False
+    assert check.passed is passed
+    if not passed:
+        assert f"packaging {_PACKAGING} (lock 0.0.1)" in check.detail
+        assert "make sync" in check.detail
+
+
+@pytest.mark.parametrize(
+    ("content", "problem"),
+    [
+        pytest.param(b"[[package]\n", "cannot parse", id="invalid-toml"),
+        pytest.param(b"\xff\xfe not utf-8", "cannot read", id="unreadable"),
+    ],
+)
+def test_check_dependency_lock_warns_on_a_lock_it_cannot_use(tmp_path: Path, content: bytes, problem: str) -> None:
+    """A lock that exists but cannot be used is a warning row, never the silence of a wheel install."""
+    lock = tmp_path / "uv.lock"
+    lock.write_bytes(content)
+
+    [check] = _check_dependency_lock(lock)
+
+    assert check.passed is False
+    assert check.required is False
+    assert problem in check.detail
 
 
 # ---------------------------------------------------------------------------

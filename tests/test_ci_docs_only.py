@@ -51,6 +51,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from sova.commands.catalog import get_canonical_dir
 
@@ -91,6 +92,38 @@ GATED_CI_JOBS = ("python-lint", "python-test-matrix", "integration")
 # leaked credential, a banned em-dash, or a broken command frontmatter, so
 # these stay ungated.
 UNGATED_CI_JOBS = ("lint-static", "secrets-scan", "invariants")
+
+
+WORKFLOW_FILES = sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml"))
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _uses_values(node: object) -> list[str]:
+    """Every `uses:` value in a parsed workflow (step and reusable-workflow job references alike)."""
+    if isinstance(node, dict):
+        found = [node["uses"]] if isinstance(node.get("uses"), str) else []
+        return found + [value for child in node.values() for value in _uses_values(child)]
+    if isinstance(node, list):
+        return [value for child in node for value in _uses_values(child)]
+    return []
+
+
+def _action_pin_violations(workflow_text: str) -> list[str]:
+    """Describe each remote action reference that is not a commit SHA carrying a version comment.
+
+    Parsing the YAML rather than grepping it keeps a `uses:` inside a comment or a multi-line string
+    out of the check; local (`./`) and `docker://` references name no tag that could be repointed.
+    """
+    violations = []
+    for ref in _uses_values(yaml.safe_load(workflow_text)):
+        if ref.startswith(("./", "docker://")):
+            continue
+        _, _, version = ref.partition("@")
+        if not _FULL_SHA_RE.fullmatch(version):
+            violations.append(f"not a pinned commit SHA: {ref}")
+        elif not re.search(rf"uses:\s*[\"']?{re.escape(ref)}[\"']?\s+#\s*v\d", workflow_text):
+            violations.append(f"pinned action missing a version comment: {ref}")
+    return violations
 
 
 @pytest.fixture(scope="module")
@@ -733,23 +766,42 @@ ALL_CI_JOB_IDS = (
 
 
 class TestCIWorkflowHardening:
-    def test_no_action_reference_uses_a_mutable_tag(self, ci_text: str) -> None:
-        """Every `uses: actions/...@...` must be pinned to a commit SHA.
+    @pytest.mark.parametrize("workflow", WORKFLOW_FILES, ids=lambda path: path.name)
+    def test_every_action_reference_is_pinned_with_a_version_comment(self, workflow: Path) -> None:
+        """Every remote `uses:` in every workflow, whatever its owner, is a commit SHA plus a version comment.
 
-        A floating tag like `@v4` can be repointed by the action's own
-        maintainers (deliberately or via a compromised account) to ship
-        different code under a version a workflow already trusted.
+        A floating tag like `@v4` can be repointed by the action's own maintainers (deliberately or via
+        a compromised account) to ship different code under a version a workflow already trusted, and a
+        bare 40-char hex pin is unreadable without the human-facing tag riding alongside it.
         """
-        for match in re.finditer(r"uses:\s*actions/[\w-]+@(\S+)", ci_text):
-            ref = match.group(1)
-            assert re.fullmatch(r"[0-9a-f]{40}", ref), f"not a pinned commit SHA: {ref}"
+        assert _action_pin_violations(workflow.read_text(encoding="utf-8")) == []
 
-    def test_pinned_actions_carry_a_version_comment(self, ci_text: str) -> None:
-        """A bare 40-char hex pin is unreadable; the human-facing tag must
-        ride alongside it as a trailing comment."""
-        for line in ci_text.splitlines():
-            if re.search(r"uses:\s*actions/[\w-]+@[0-9a-f]{40}", line):
-                assert re.search(r"#\s*v\d+", line), f"pinned action missing a version comment: {line}"
+    def test_pin_check_reads_only_real_uses_keys(self) -> None:
+        """Comments, multi-line strings and local or Docker references are not action pins to check."""
+        workflow = (
+            "jobs:\n"
+            "  build:\n"
+            "    uses: ./.github/workflows/reusable.yml\n"
+            "    steps:\n"
+            "      # uses: actions/checkout@v4\n"
+            "      - uses: ./.github/actions/local\n"
+            "      - uses: docker://alpine:3.20\n"
+            f"      - uses: SonarSource/sonarqube-scan-action@{'a' * 40} # v8.5.1\n"
+            "      - run: |\n"
+            "          echo 'uses: actions/setup-python@v5'\n"
+        )
+        assert _action_pin_violations(workflow) == []
+
+    @pytest.mark.parametrize(
+        ("line", "problem"),
+        [
+            pytest.param("      - uses: SonarSource/sonarqube-scan-action@v8", "not a pinned commit SHA", id="tag"),
+            pytest.param(f"      - uses: actions/checkout@{'b' * 40}", "missing a version comment", id="no-comment"),
+        ],
+    )
+    def test_pin_check_flags_a_tag_or_a_bare_sha(self, line: str, problem: str) -> None:
+        [violation] = _action_pin_violations(f"jobs:\n  build:\n    steps:\n{line}\n")
+        assert problem in violation
 
     @pytest.mark.parametrize("job", ALL_CI_JOB_IDS)
     def test_every_job_declares_a_timeout(self, ci_text: str, job: str) -> None:

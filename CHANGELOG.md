@@ -1,0 +1,1375 @@
+# Changelog
+
+Generated from the conventional commits by `make changelog` (scripts/changelog.py); do not edit by hand.
+Lists features, fixes and breaking changes; the full history is `git log`.
+
+## 0.1.0 (2026-11-27)
+
+**Features**
+
+- **core**: link the worktree env and skip the validate run for exit-code baselines
+- **dashboard**: keep the remaining pages from scrolling sideways on the phone
+- **dashboard**: fit the Settings page to the phone
+- **dashboard**: fit the Supervisor page to the phone
+- **cli**: warn in doctor when LDAP is enabled without its directory settings
+- **dashboard**: fit the Work page to the phone, one stage per screen
+- **dashboard**: rebuild Home as the phone's two-second check
+- **dashboard**: add the phone shell: tab bar, top bar and full-screen sheets
+- **dashboard**: one side panel for the feed and ticket detail, Triage all, Queue under More (#1572)
+- **adapters**: use Jira native priority for Jira-backed work items (#1573)
+- **dashboard**: make the live agent output readable at a glance (#1558)
+- **dashboard**: keep the Work board close to real time (#1555)
+- **roles**: make review rounds converge and give the developer the acceptance criteria (#1554)
+- **dashboard**: narrate the activity feed as one sentence per issue (#1551)
+- **dashboard**: readable live agent output with timestamps (#1550)
+- **core**: finish the Work header: star-aware CodeRabbit tile, tiles (#1552)
+- **dashboard**: overlay a wider activity feed panel opened at newest (#1546)
+- **dashboard**: group run history by issue with titles and outcomes (#1539)
+- **dashboard**: show 7-day success, merged PRs and cost per PR in the Work header
+- **dashboard**: add 7-day overview stats service and endpoint
+- **dashboard**: resolve the cost summary's today in the browser time zone
+- **core**: let list_merged_prs_since take a limit and field list
+- **core**: classify terminal run outcomes for success-rate reporting
+- **cli**: read and clear model routes, apply the model profile on install
+- **dashboard**: edit model routes per task and share a model profile
+- **config**: add insert-if-absent setting writer and a TOML layer reader
+- **dashboard**: show time in step and last output on running agents
+- **core**: show tool calls and real timestamps in live agent output
+- **ipc**: parse Claude stream-json events into output lines
+- **dashboard**: add a phone view for the tailnet-served dashboard
+- **dashboard**: show the Work board's age after a failed refresh and retry it
+- **cli**: store commit lists on install and surface convention findings
+- **core**: validate commit subjects against the project's own lists
+- **config**: use the managed project's commit types and scopes
+- **cli**: validate and set the squash subject in integrate-pr
+- **core**: expose commit-line validation and squash-only detection for merges
+- **supervisor**: say why an auto-rebase failed and offer the fix on its card
+- **dashboard**: accept a Tailscale Serve proxy with a tailnet identity check (#1519)
+- **commands**: close the linked issue from pr, review-pr and integrate-pr
+- **roles**: check acceptance criteria in the reviewer
+- **core**: close the linked issue with every PR and drop "Part of"
+- **dashboard**: add design-system component foundation and unify color tokens
+- **dashboard**: start the right agent and find any open issue from the Work page
+- **commands**: render the fast check in develop, simplify and review
+- **core**: run the full check suite once per developer run
+- **dashboard**: replace the top of the Agents page with a Work page
+- **dashboard**: show spec drift on the spec page
+- **core**: warn when main changed files a spec relies on since research
+- **dashboard**: add reconnect flow UI to the Connections page
+- **dashboard**: add reconnect actions for GitHub CLI and Google OAuth
+- **awareness**: share Google OAuth authorization flow
+- **dashboard**: dim unsuitable nodes and add Up next to the supervisor page
+- **supervisor**: filter dependency graph actions by suitability mode
+- **dashboard**: show which model each step runs on, set step models and pin short names
+- **core**: give each role its own model fallbacks
+- **dashboard**: share one status socket per tab and push live data over it
+- **commands**: enforce most-repeated review rules in managed commands
+- **cli**: add sova retro top-rules for the most repeated review rules
+- **dashboard**: rebuild Settings as a section list with search, Changed only and an Overview
+- **dashboard**: report each setting's default and source, and reset a stored value
+- **dashboard**: add work board api with priority, hiding and pruning
+- **commands**: record the review retro after a merge
+- **knowledge**: record which recorded rules merged PRs' review findings repeat
+- **db**: add the pr_retros table for per-PR review retrospectives
+- **dashboard**: rebuild the run history as a compact table with filters
+- **dashboard**: filter the run history by date, action and number, with totals
+- **dashboard**: name each kind of run once, from a server-side table
+- **dashboard**: set the spending limit and CodeRabbit trigger from their pages
+- **dashboard**: switch oversight and dependency scanning on from their pages
+- **dashboard**: show the supervisor's switches on its page
+- **dashboard**: change the agent limit from the Agents page
+- **dashboard**: add settingSwitch and settingStepper shared controls
+- **dashboard**: delete logs and memory pages and group sidebar
+- **ipc**: add ntfy push backend for needs-you and failure events
+- **config**: add ntfy notification settings and keyring-backed token
+- **mcp**: add operator tools for status, handoffs and run control
+- **dashboard**: add project identity route and public format_host
+- **dashboard**: make run_detail live via the shared status channel
+- **cli**: add refresh-pr-body command for unparseable verdicts
+- **config**: add PR-body timeout and diff-cap settings
+- **commands**: gate /integrate-pr on a standing SOVA REVISE or BLOCK
+- **cli**: add sova pr-verdict to print the verdict for a PR head
+- **dashboard**: treat a standing REVISE or BLOCK as a non-approved PR state
+- **roles**: retry a failed review post once and fail the run if it still fails
+- **supervisor**: limit auto-research to issues close to development
+- **config**: add research lookahead setting
+- **monitoring**: measure process-tree CPU over the sampling interval
+- **core**: size check workers to the machine and every running agent
+- **roles**: withhold approve when any review chunk went unreviewed
+- **core**: let a step mark its failure non-retryable
+- **adapters**: flag task adapters whose body cannot be restored losslessly
+- **core**: keep waiting on every check in /integrate-pr when the base
+- **commands**: add test-writing rules to develop, review and testing-patterns
+- **config**: cap pytest workers per agent with testing.check_workers
+- **core**: reuse the develop agent's recorded check in the inner loop
+- **commands**: fold health-audit findings into open issues
+- **commands**: search open issues before filing a new one
+- **core**: resolve addressed review threads right after the push
+- **dashboard**: show the resolve_review_threads step in the address-review pipeline
+- **config**: add recovery.kill_orphans setting
+- **cli**: write SOVA runtime exclusions to .git/info/exclude on install
+- **commands**: tell /after-merge and /integrate-pr that Part of issues lose workflow labels
+- **core**: clear stale workflow labels after merging a PR that is only part of an issue
+- **core**: warn about invalid configured model names in doctor
+- **cli**: check suitability in sova run and add --override-suitability
+- **dashboard**: confirm suitability overrides in the launch UI
+- **dashboard**: refuse manual launches of epic and human-only issues
+- **roles**: accept human-only issues when suitability is overridden
+- **core**: add state_accepted helper and override_suitability context flag
+- **core**: show cost, duration, tokens and turns per role and per phase (#1401)
+- **core**: flag Claude models left in an OpenAI-only configuration in doctor
+- **core**: research through a read-only agent on a text-only provider
+- **core**: add a three-valued open-state check for stored PR numbers
+- **commands**: budget command size and cut health-audit to 24k chars
+- **cli**: add audit and board subcommands for the health-audit gates
+- **commands**: print phase markers in integrate-pr and address-pr
+- **dashboard**: tally model calls, tokens and time per command phase
+- **core**: record agent-session turns on cost records
+- **db**: add cost_records.num_turns and task_runs.phase_usage
+- **core**: agents "All" view hides backlog and needs-spec items; (#1365)
+- **dashboard**: rank next autonomous task and expose suitability (#1357)
+- **dashboard**: move provider auth widget into the sidebar footer (#1333)
+- **core**: update built-in model list, aliases and prices for 5.5 (#1326)
+- **core**: Follow the target project's commit convention in PR titles and step-authored commits, and fold hook fixes into the commits they fix (#1319)
+- **core**: Treat "no checks reported" from gh pr checks as an empty check list, not a fetch failure (#1317)
+- **core**: Review against the current issue and ignore specs written for an older revision of it (#1316)
+- **core**: Describe PRs from the merge-base diff and write Closes only when every acceptance criterion is met (#1315)
+- **core**: Commit agent edits when the address-findings dispatch fails, and scope step-authored commit messages (#1305)
+- **core**: Add blocker and undefined priority levels backed by one shared priority model (#1306)
+- **core**: Remove the Dashboard page and make Agents the landing page (#1304)
+- **core**: Route validation and CI fix loops through provider-aware task selection (#1286)
+- **supervisor**: Block safety-critical commands whose installed recipe is stale (#1284)
+- **core**: Let the develop step reach a fix cycle on large issues and record why its check failed (#1262)
+- **core**: Eliminate redundant full checks in the autonomous workflow (#1261)
+- **core**: Stop agent squash steps from silently reverting merged changes (#1257)
+- **core**: Add a shared suitability classifier used by every readiness decision (#1256)
+- **core**: Classify issues needing an interactive session as interactive during triage (#1259)
+- **core**: Extract doctor checks into a shared module and add a dashboard health panel (#1258)
+- **core**: Make the systemd unit writable, rotate server logs, and ship runtime resources in the wheel (#1248)
+- **core**: Delete unreachable dashboard pages, port the two features still worth keeping (#1243)
+- **#1051**: Unify agent status into one real-time channel (#1244)
+- **core**: Bound and benchmark pytest workers for parallel agent runs (#1242)
+- **db,cli**: Refuse to stamp a failed migration at head and back up the database before DDL (#1239)
+- **core**: Apply the origin/CSRF guard to every mutating dashboard route and harden the network edge (#1240)
+- **core**: bind MonitorCIStep's CI result to the commit the pipeline just pushed (#1237)
+- **#1223**: Add a disclosure gate, board membership and claim verification to the health-audit command (#1238)
+- **#1129**: Evaluate and configure provider-aware models for each SOVA role and step (#1236)
+- **#1198**: Record find-task suitability locally for unassigned tickets to stop Jira watcher emails (#1221)
+- **core**: harden address-pr PR guard and CI evidence, normalize ingest-review input (#1220)
+- **#1189**: Share one in-memory test database schema per worker instead of rebuilding it per test (#1222)
+- **dashboard**: add runtime-model dropdowns gated on runtime capability (#1217)
+- **core**: Render plain tracebacks in tests and drain feed persistence before closing the test DB (#1215)
+- **core**: Clear the remaining reliability findings blocking main's SonarCloud gate (#1203)
+- **#1186**: Run the CI test suite in parallel with low-overhead coverage (#1214)
+- **core**: fix create_adapter call that raises TypeError in merge queue monitor (#1199)
+- **commands**: enforce recorded knowledge in workflow commands and retire approve-merge (#1201)
+- **commands**: enforce recorded knowledge in review, pr, integrate-pr and ingest-review (#1196)
+- **#1184**: Stop tests from writing to the real SOVA database and fixed /tmp paths (#1195)
+- **#1178**: Make find-task triage Jira and GitHub tickets into a compact table with label write-back (#1181)
+- **core**: extend model detection to the agent-runtime layer with per-layer capability (#1182)
+- **invariants**: remove spaced double dashes repo-wide and enforce the rule on the whole tree (#1180)
+- **#1128**: Report Codex model usage and budget capability without treating unknown cost as free (#1169)
+- **#1036**: Add fallback chain selection and per-run model override (#1168)
+- **#1125**: Route tool-using SOVA pipeline steps through an agent runtime (#1167)
+- **#1161**: Fix review-finding parsing drift and PR issue-closing, trim review/PR verbosity (#1164)
+- **invariants**: add silent-revert-guard, cdn-integrity, and structured-logging checks (#1165)
+- **#1162**: Restore model dropdowns and Agents task refresh after merge (#1163)
+- **#1148**: Repair provider Connections credentials, atomic activation, and Codex prompt privacy (#1153)
+- **#924**: Remove or explicitly contain provider bypasses in OpenAI-only runs (#1154)
+- **core**: Replace free-text layer-2 model fields with grouped dropdowns (#1151)
+- **core**: Log every managed-file sync that mutates a target project (#1150)
+- **core**: Build a provider Connections page with guided setup and reconnect (#1147)
+- **#1112**: Resolve the SOVA verdict from GitHub review markers alone, not five reconciled sources (#1145)
+- **#1136**: Make reusable SOVA skills single-source and verify Codex discovery (#1142)
+- **core**: Make core development workflows provider-neutral without changing their safeguards (#1143)
+- **core**: Delete the integration gate layer: one resolver decides Integrate, never a disabled button (#1144)
+- **core**: Keep OpenAI API credentials and workflow prompts out of agent subprocess exposure (#1140)
+- **#1126**: Separate reviewer analysis from trusted state updates for OpenAI runs (#1141)
+- **#1123**: Render canonical SOVA commands as Claude commands and Codex skills (#1138)
+- **core**: Review budget cap becomes a terminal state with Integrate enabled, not a dead-end circuit breaker (#1133)
+- **#1131**: Create provider-neutral agent instructions and reduce always-loaded context (#1134)
+- **#1034**: Serve discovered models through a cached models-available endpoint (#1132)
+- **#1109**: Read GitHub mergeStateStatus and treat no-CI as neutral, not failed (#1114)
+- **core**: Reviewer approval threshold: let a re-review round converge instead of looping forever (#1113)
+- **core**: Resolve model aliases per active backend to fix cross-backend drift (#1106)
+- **core**: add layer-2 backend detection and model enumeration primitive (#1105)
+- **core**: store llm.api_key in the OS keyring instead of plaintext SQLite (#1103)
+- **dashboard**: surface agent failure rate and failure taxonomy (#1101)
+- **#976**: Fix worktree setup that leaves slash commands unavailable (#1099)
+- **#978**: Identify what is terminating agent processes with SIGTERM (#1100)
+- **#944**: integrate Codex with agent lifecycle and recovery (#1085)
+- **core**: Pass LLM prompt to claude -p via stdin instead of argv (#1087)
+- **core**: remove hardcoded 180s timeout in generate_tasks/planner LLM calls (#1086)
+- **core**: sova server stop fails silently when process hangs (#1082)
+- **#1079**: Surface the real create_pr failure and preflight gh push permission (#1081)
+- **#995**: complexity-tier-specific step timeouts (#1075)
+- **core**: decide PushStep force-push from branch divergence, not from pr_number (#1080)
+- **#695**: command sync diff review and per-file selective sync (#1070)
+- **core**: Do not reset IN_PROGRESS issues that already have an open PR (#1077)
+- **core**: map Codex JSONL events into SOVA stream results (#1076)
+- **core**: close the review loop autonomously and post inline comments from /review-pr (#1074)
+- **core**: Address-review push step fails on invalid refspec when branch_name resolution is silently empty (#1069)
+- **core**: expose Codex runtime selection and readiness (#1068)
+- **core**: Enable integration gates and require an approving verdict (#1062)
+- **core**: harden Codex runtime authentication and credential isolation (#1061)
+- **core**: stale terminal TaskRun blocks already_running gate and stalls issue progression indefinitely (#1060)
+- **core**: transition_state() label swap is non-atomic: causes false Gate N failures and stuck duplicate state labels (#1058)
+- **core**: Capture the real failure cause when an agent run fails (#1059)
+- **core**: add CodexRuntime subprocess foundation (#1057)
+- **core**: read-only provider status widget and guided setup (#1047)
+- **core**: mark fix-loop LLM timeouts and pre-empt step deadline overruns (#1048)
+- **core**: Surface the resolver's reason chain on the task card (#1045)
+- **supervisor**: retry planner LLM timeouts and add health widget (#1041)
+- **core**: replace state overlays with one shared next-action resolver (#1030)
+- **#324**: publish SOVA commands to ai-helpers marketplace (#1006)
+- **#323**: add Confluence access via mcp-atlassian integration (#1005)
+- **core**: LDAP-based intelligent issue routing for Red Hat projects (#1009)
+- **supervisor**: route conflicting PRs to rebase instead of Integrate (#1023)
+- **core**: distinguish unknown from zero in review thread signals (#1022)
+- **cli**: add skills-sync command for fleet-wide skill rollout (#1024)
+- **#987**: Anchor SOVA review verdicts to the reviewed commit SHA (#1019)
+- **core**: clear a SOVA verdict once its address cycle completes (#1018)
+- **#931**: access control gate for credential-mutating auth endpoints (#1020)
+- **#351**: dependency health tracking page (#1011)
+- **#389**: Dashboard briefing page (#1012)
+- **#322**: YAML-configurable step pipelines (#1003)
+- **#921**: PR12: New provider types (openai / ollama / vertex) [llm][docs] (#1002)
+- **#920**: PR11: Per-provider cost population and budget capability gating [llm][core] (#1001)
+- **#321**: add confidence scoring step to developer pipeline (#1004)
+- **core**: PR10: Provider-capability runaway guard [core][llm] (#999)
+- **#916**: PR7: Wire task_type into remaining step sites + shared arg-builder [core][llm] (#997)
+- **#913**: PR4: Activate task-type routing correctly (with pinning) [llm][core] (#985)
+- **config**: PR8: client-side alias map + create_provider(LLMConfig) (#983)
+- **core**: PR9: Batch path alias normalization [llm] (#967)
+- **#915**: De-hardcode haiku sub-task defaults (intentional behavior change) [core][roles] (#960)
+- **roles**: collapse panel review into one call per model group (#954)
+- **core**: add issue-body-template skill for consistent issue creation (#956)
+- **#914**: PR5: roles.reviewer_model and de-hardcode config-driven roles [config][roles] (#955)
+- **#912**: PR3: One client-owned fallback loop with shared deadline [llm][core] (#953)
+- **core**: providers raise typed LLM errors
+- **core**: typed LLM error hierarchy
+- **cli**: OpenAI Codex first setup (#950)
+- **core**: document local Headroom usage for interactive Claude Code sessions (#938)
+- **core**: add coverage for agent handoff and recovery services
+- **#897**: Track compression savings in cost records (schema + dashboard) (#908)
+- **core**: time budget graceful degradation with fraction-based thresholds
+- **core**: observability foundation (logging, CI coverage, healthz, secrets scan)
+- **knowledge**: introduce generic design-taste skill for UI validation
+- **core**: add LLM provider selection UI and configuration (#907)
+- **#896**: Wire Headroom compression into the LLM client choke point (#904)
+- **core**: Update test fixtures to use DB-backed config instead of sova.toml files (#905)
+- **#895**: Compression foundation: Headroom module, optional dependency, config (#901)
+- **#556**: Update all sova.toml references in docs, commands, and error messages (#899)
+- **dashboard**: graceful server restart flow (#698) (#891)
+- **#850**: Strengthen deterministic PR state model: fix incorrect action routing (#892)
+- **core**: Budget override confirmation dialog (#890)
+- **#746**: output schema validation with retry for structured step outputs (#888)
+- **core**: command content browser and roles page command cross-reference (#886)
+- **core**: split agent_lifecycle and work_item_service god files (#887)
+- **#882**: improve calendar briefing by filtering recurring meetings and highlighting exceptions (#884)
+- **#880**: intelligent Gmail filtering and aggregation for briefing (#881)
+- **#385**: CalendarProvider implementation (#879)
+- **awareness**: add GmailProvider for email awareness (#878)
+- **awareness**: Google OAuth2 flow for Gmail + Calendar (#868)
+- **#871**: add Anthropic direct API provider alongside existing LLM providers (#875)
+- **#387**: PRStatusProvider (cross-project PR aggregation) (#867)
+- **awareness**: RemindersProvider (Apple Reminders via JXA) (#869)
+- **dashboard**: redesign activity feed as chat-style cockpit (#860)
+- **#383**: CLI briefing command with Rich output (#861)
+- **#853**: Split gate checks into lightweight validation and heavyweight verification (#856)
+- **#383**: CLI briefing command with Rich output (#854)
+- **cli**: add sova migrate-config command for TOML-to-DB migration (#555) (#851)
+- **dashboard**: add Vertex AI backend for LLM suggestions (#688) (#848)
+- **core**: reduce rebase failures in parallel development (16 lost runs) (#843)
+- **core**: cap pre-push hook output size before LLM invocation in validate step (#837)
+- **#718**: add no-double-dash invariant for prose text (#830)
+- **core**: Migrate sova install/setup to populate database instead of creating sova.toml (#821)
+- **#741**: protected paths config for reviewer verdict capping (#824)
+- **#125**: MCP endpoint for agent self-inspection (#810)
+- **#122**: Event-sourced run journal with integrity verification (#787)
+- **core**: adversarial challenger pass for reviewer false-positive filtering (#776)
+- **#320**: multi-model consensus for rebase conflict resolution (#716)
+- **#710**: SOVA project failure rate critically high at 44.2% (#735)
+- **#597**: add agent permission setup to sova install (#717)
+- **core**: Migrate settings service write path to database (#707)
+- **#693**: close pipeline auto-execute gaps (review, integrate, spec approval) (#708)
+- **#33**: VM deployment and always-on operation mode (#705)
+- **#694**: developer failure gate + issue deprioritization for repeated failures (#706)
+- **#553**: Migrate supervisor and fleet manager config writes to database (#697)
+- **#687**: configurable CLI timeout (hardcoded 600s causes 44% of failures) (#699)
+- **#118**: A2A (Agent-to-Agent) protocol for inter-agent communication (#703)
+- **#689**: fail-faster mechanisms for developer pipeline (66% develop step failure rate) (#701)
+- **#672**: Add direct unit tests for _review_comments.py (#686)
+- **#604**: add to manual queue directly from dependency graph node (#690)
+- **core**: Add ProjectSetting ORM model and DB-backed config loader (#682)
+- **#678**: model fallback chain for billing/rate-limit resilience (#685)
+- **#592**: bug(dashboard): --reload kills running agents on source file changes (#679)
+- **core**: smarter spec generation with project context and stricter open questions (#680)
+- **core**: auto-manage task queue from open issues and oversight findings (#681)
+- **supervisor**: Dependabot auto-merge for dependency PRs (#671)
+- **#633**: Post-merge cleanup gaps: branch not deleted + JIRA transition name mismatch (#673)
+- **#668**: configurable CodeRabbit review trigger after PR creation (#670)
+- **core**: decompose reviewer's 606-line function (#669)
+- **#606**: Jira-style priority icons in dependency graph and queue (#665)
+- **#605**: human-required and interactive-recommended badges on graph nodes (#666)
+- **core**: collapse completed milestone groups in dependency graph (#664)
+- **dashboard**: auto-launch agents with complexity-routed model, prompt only for complex/epic (#659) (#661)
+- **supervisor**: detect and auto-reset stuck IN_PROGRESS issues (#655)
+- **dashboard**: register merge queue monitor in app lifespan
+- **dashboard**: wire merge queue entry creation into agent lifecycle
+- **dashboard**: add MergeQueueMonitor background polling service
+- **db**: add MergeQueueEntry model and migration 029
+- **core**: auto-reset stale agent labels on failed/interrupted runs (#651)
+- **supervisor**: add auto_triage config, hot-reload daemon settings (#648)
+- **supervisor**: LLM planning step for resource-aware action dispatch (#602) (#625)
+- **supervisor**: persona config for LLM planning agent (#600) (#624)
+- **#603**: state-appropriate action buttons on dependency graph nodes (#623)
+- **adapters**: add ON_QA state and make post-merge transition adapter-aware (#607) (#613)
+- **supervisor**: CI minutes budget tracking via GitHub Actions billing API (#601) (#610)
+- **dashboard**: /oversight page with findings, runs, and controls (#449) (#594)
+- **scheduler**: Batch API submission path for non-interactive supervisor runs (#537) (#593)
+- **commands**: /benchmark-report command and worktree-safe logging (#571) (#591)
+- **supervisor**: GitHub API rate limit detection, UI surfacing, and spawn throttling (#590)
+- **dashboard**: propose SOVA issue from fleet failure pattern (#432) (#588)
+- **core**: add aria labels and accessibility attributes (#587)
+- **#447**: autonomous issue creation from oversight findings (#585)
+- **#579**: fail-fast on missing git identity in pipeline and installation (#583)
+- **commands**: add drift detection, backport, and fix label pagination (#582)
+- **#570**: enrich CostRecord with model ID and token breakdown (#578)
+- **#446**: LLM pattern analysis: classify findings and route local vs global (#576)
+- **core**: session stop hook for automatic model and cost capture (#577)
+- **#568**: instrument core commands with automatic benchmark logging (#574)
+- **#563**: graceful setup experience for unconfigured projects (#573)
+- **awareness**: add AgentRunProvider for cross-project agent activity (#565)
+- **#350**: PR lifecycle metrics page (cycle time, throughput, review efficiency) (#562)
+- **dashboard**: group PR tracker into collapsible sections by category (#561)
+- **#558**: Supervisor graph: epic node styling and priority arrow icons (#559)
+- **#549**: auto_address_review gate in TaskProgressionEngine (#560)
+- **#534**: CreatePRStep generates PR descriptions from issue intent, not actual diff (#548)
+- **#483**: manual task queue with priority ordering on supervisor page (#545)
+- **dashboard**: polish launch agent modal (#547)
+- **core**: per-run model selection with complexity guidance (#544)
+- **#460**: issue ownership gate: skip issues/PRs not owned by local github_user (#543)
+- **supervisor**: canvas preservation, priority visibility, and approval flow (#541) (#542)
+- **#119**: Cost-optimized model routing by task complexity (#539)
+- **dashboard**: enforce pipeline progression on priority queue page (#535)
+- **core**: _detect_fix_changes in DevelopStep misses untracked new files during fix loop (#530)
+- **supervisor**: spec review actions in dependency graph drawer (#529)
+- **core**: enrich dependency graph nodes with agent liveness and handoff-pending state (#523)
+- **core**: MERGED state does not unblock dependent tasks in dependency graph (#516)
+- **supervisor**: add event-driven graph refresh on agent finalization (#521)
+- **#476**: queue page pagination and advanced filter UI (#524)
+- **core**: developer mid-pipeline clean exit (no push/PR) is marked "done" instead of "failed" (#515)
+- **core**: _validate_address_pr silently passes when all validation evidence is inconclusive (#517)
+- **core**: non-blocking telemetry push to hub after pipeline finalization (#509)
+- **#481**: show PR status and review verdict on dependency graph nodes (#510)
+- **ipc**: file-based agent output for dashboard restart survival (#500)
+- **#326**: auto-configure PatternFly MCP for PF React projects (#494)
+- **core**: observation engine: cross-project state snapshot on each wake cycle (#492)
+- **core**: TelemetryEvent model and POST /api/telemetry/ingest for hub deployment (#489)
+- **#448**: operations persona: configurable vision document for oversight reasoning (#490)
+- **#431**: /fleet page: cross-project failure analytics (#491)
+- **dashboard**: supervisor dependency graph: zoom/pan, milestone groups, chain highlighting (#480)
+- **#123**: Per-agent status badges with real-time updates on agents page (#484)
+- **#251**: feat(roles): spec-anchored review: verify implementation against spec intent (#474)
+- **#349**: PR summary metrics strip above PR tracker (#468)
+- **#338**: automatic GC for stale worktrees, local branches, and git stashes (#450)
+- **#298**: cross-project fleet manager with resource orchestration (#469)
+- **#461**: supervisor dependency graph: grouped cluster layout with action drawer (#462)
+- **core**: color-coded PR age badges with urgency signal (#463)
+- **#361**: bug(dashboard): developer run shows 15/16 steps despite handoff_to_reviewer completing (#466)
+- **#360**: enable sova_reviewed integration gate by default (#465)
+- **#297**: supervisor daemon with visual dependency graph dashboard (#453)
+- **#368**: render markdown in agent output and log views (#452)
+- **core**: make review-pr command write structured handoff verdict (#455)
+- **core**: FleetService: read-only cross-project failure aggregation (#443)
+- **#444**: OversightAgent daemon: wake-cycle infrastructure and server integration (#454)
+- **#427**: perf(dashboard): cache get_priority_queue and debounce work-items polling (#442)
+- **core**: auto-rebase agent triggered on merge conflict detection (#428)
+- **core**: issue 375 (#426)
+- **#366**: Dashboard output polling: replace HTTP short-poll with SSE + adaptive backoff (#429)
+- **#413**: issue quality gate and template enforcement in triage pipeline (#424)
+- **#393**: merge queue support with configurable post-merge state (#421)
+- **core**: merge conflict detection gate and dashboard conflict badge (#415)
+- **core**: load review findings from GitHub PR review bodies
+- **core**: skip CI polling when no new commits were pushed
+- **core**: issue 314
+- **core**: issue 314
+- **dashboard**: apply issue/PR distinction across all templates
+- **dashboard**: add PR visual distinction with lavender color and PR prefix
+- **dashboard**: detect cross-instance SOVA reviews via GitHub fallback
+- **roles**: emit sova-review marker in review bodies for cross-instance detection
+- **dashboard**: render enriched metadata on task cards and PR tracker
+- **dashboard**: pass enriched PR and JIRA metadata through to work items
+- **adapters**: fetch diff stats, assignees, and updated_at from PR and JIRA APIs
+- **dashboard**: add LLM suggestion widget with inline feedback to task cards
+- **dashboard**: add /prs/{pr_number}/suggestion and /prs/feedback endpoints
+- **dashboard**: add LLM suggestion service for PR action dual-evaluation
+- **db**: add ActionFeedback model and migration for PR state experiment
+- **dashboard**: split PR_CHANGES_REQUESTED into SOVA vs external paths
+- **dashboard**: add author avatars and Mine/All toggle to PR tracker
+- **dashboard**: add author_filter query param for runtime PR filtering
+- **dashboard**: add Re-run button to history and failed tables
+- **core**: resource exhaustion guard: pre-spawn memory gate and warning banner
+- **awareness**: add BriefingService aggregation engine and tests
+- **config**: add AwarenessConfig with triple registration
+- **awareness**: add AwarenessProvider ABC, AwarenessItem, and provider registry
+- **core**: runtime watchdog for stuck and bypassed agents
+- **core**: issue 357
+- **core**: memory pressure gate in TaskProgressionEngine
+- **core**: issue 343
+- **core**: auto-retry agent runs on recoverable pipeline failure
+- **core**: Standardize agent output quality: reviews, PR descriptions, address-PR comments
+- **dashboard**: add PR_SOVA_PENDING state for externally-reviewed PRs
+- **adapters**: add agent label pre-flight for GitHub repos
+- **adapters**: add agent label pre-flight for GitHub repos
+- **supervisor**: dependency-aware task progression engine
+- **core**: Resource monitoring: capacity advisor and energy estimation
+- **dashboard**: persist system metrics history across page navigation
+- **core**: add cross-project resource aggregation
+- **core**: issue 295
+- **core**: issue 295
+- **core**: background PR lifecycle monitor with auto-retry
+- **core**: developer-1784028747
+- **commands**: add skill distribution system
+- **commands**: add audit-instructions command
+- **core**: add prompt injection scanning for external inputs
+- **core**: add context management guidance to headless agent preamble
+- **core**: add ci.exclude_checks to skip checks during CI polling
+- **core**: issue 257
+- **core**: Resource monitoring: live system metrics floating widget
+- **core**: issue 256
+- **core**: Resource monitoring: per-run resource metrics in dashboard
+- **core**: issue 121
+- **core**: Kanban pipeline view for the agents page
+- **core**: PR creation throttle for CodeRabbit rate limit compliance
+- **core**: issue 250
+- **core**: activity feed: conversational notification panel with live system events
+- **core**: configurable PR integration readiness gates
+- **core**: add JIRA ticket prefix and link to PR creation
+- **adapters**: add get_comments() for research gate fallback
+- **dashboard**: Jira-aware issue links and live elapsed timer
+- **dashboard**: add PR author filter to show only user's PRs
+- **core**: issue 293
+- **core**: task dependency graph engine
+- **core**: issue 291
+- **core**: CodeRabbit rate limit tracker and quota management
+- **core**: issue 277
+- **core**: replace LLM calls with deterministic code in pipeline operations
+- **core**: issue 255
+- **core**: Resource monitoring: DB model and per-run resource persistence
+- **core**: issue 205
+- **core**: integrate RTK token compression for headless agent runs
+- **core**: memory lifecycle management: consolidation, decay, and archival
+- **core**: issue 241
+- **core**: Feed reviewer context about prior external findings to avoid duplicate review work
+- **core**: explicit regression tracking via test baseline snapshots
+- **core**: issue 226
+- **core**: relevance-filtered memory injection into agent prompts
+- **core**: issue 234
+- **core**: Multi-perspective review: panel of reviewers with different lenses
+- **core**: issue 232
+- **core**: Inner dev loop: build-check-fix cycle within DevelopStep
+- **core**: issue 254
+- **core**: issue 254
+- **core**: Resource monitoring: psutil integration and ResourceCollector service
+- **core**: issue 225
+- **core**: issue 225
+- **core**: add memory relationship graph for connected retrieval
+- **core**: issue 238
+- **core**: replace manual TTL caches with cachetools and add concurrency locks
+- **core**: add semantic memory search via embeddings
+- **core**: issue 199
+- **core**: LLM output egress filter for external-facing actions
+- **core**: issue 240
+- **core**: add health check endpoint and harden config credential masking
+- **core**: add missing FK indexes and protect concurrent engine initialization
+- **core**: local model support via Ollama for cost-tier tasks
+- **core**: issue 237
+- **core**: harden reviewer JSON parsing and reduce _execute complexity
+- **core**: issue 239
+- **core**: expand thin test coverage for scheduler and knowledge.sharing
+- **core**: start planner agent without issue number
+- **core**: issue 157
+- **core**: record model routing decisions in CostRecord
+- **core**: issue 188
+- **core**: issue 188
+- **core**: phase milestone creation and issue organization guidance during project onboarding
+- **core**: issue 165
+- **core**: planning pipeline steps (scan, generate, validate)
+- **core**: spec-mediated context compression for token efficiency
+- **core**: issue 156
+- **core**: complexity-to-model routing rules
+- **core**: issue 246
+- **core**: provenance threading: spec as living decision record across pipeline
+- **core**: issue 163
+- **core**: approval resume endpoint and UI button
+- **core**: issue 164
+- **core**: create PlannerRole class for issueless planning
+- **core**: issue 162
+- **core**: add pause-for-approval semantics to WorkflowEngine
+- **core**: auto-spawn developer after spec auto-approval
+- **dashboard**: improve spec review UX in task list
+- **core**: issue 155
+- **core**: task complexity scorer module
+- **core**: spec-anchored review: verify implementation against spec intent
+- **core**: issue 187
+- **core**: Add Specs listing page to sidebar for browsing all specifications
+- **core**: replace file-based output with DB-backed storage
+- **core**: Mid-pipeline prompt injection guard for LLM calls
+- **core**: replace file-based output with DB-backed storage
+- **core**: add OutputLine model, migration, and output config
+- **core**: issue 186
+- **core**: Spec approval modal allows stacking: Enter key and repeated clicks spawn multiple overlays
+- **dashboard**: unified work item state model for agents page (#218)
+- **core**: issue 220
+- **core**: Jira lifecycle enrichment: issue creation, sub-task tracking, and setup wizard
+- **core**: issue 148
+- **core**: kanban drag-drop card reordering
+- **core**: issue 147
+- **core**: configurable kanban column grouping
+- **core**: issue 219
+- **core**: worktree isolation for non-issue PR commands
+- **commands**: use {{ check_cmd }} for preflight CI checks
+- **config**: add check_cmd for full CI-equivalent preflight checks
+- **dashboard**: add SOVA Installation card to Settings page
+- **commands**: add shared _diff_files helper and diff_guidelines
+- **core**: auto-resolve worktree conflicts in sync_branch
+- **core**: add worktree conflict detection and resolution
+- **core**: add SonarCloud coverage quality gate support
+- **#207**: Headless agents hang indefinitely waiting for CI checks (#212)
+- **core**: issue 150
+- **core**: clickable step pipeline bar on run detail page
+- **core**: issue 146
+- **core**: kanban board UI component on agents page
+- **core**: add retry_count tracking to step execution
+- **dashboard**: kanban API endpoint for agent pipeline view
+- **core**: issue 154
+- **core**: issue 154
+- **dashboard**: WebSocket ConnectionManager with multi-project isolation
+- **core**: issue 154
+- **core**: WebSocket endpoint for real-time agent status
+- **core**: issue 153
+- **core**: issue 153
+- **core**: status badge UI component for agents
+- **dashboard**: smart action buttons, handoff grid, and pipeline rendering
+- **dashboard**: compute PR state from review threads and review history
+- **invariants**: add invariant checks to pre-push hook and roadmap command
+- **core**: issue 160
+- **core**: issue 160
+- **core**: create MockRuntime for deterministic agent testing
+- **core**: issue 152
+- **core**: issue 152
+- **core**: agent status aggregator service
+- **dashboard**: add agent status aggregator service
+- **dashboard**: add PR tracker widget and inline PR badges on agents page
+- **dashboard**: add PR tracker backend with computed lifecycle state
+- **dashboard**: add uninstall with checkbox confirmation dialog
+- **cli**: add sova uninstall command with keep-by-default semantics
+- **core**: issue 159
+- **core**: extract AgentProcess into SubprocessRuntime
+- **core**: issue 158
+- **core**: create AgentRuntime ABC
+- **commands**: distribute generalizable guideline templates to projects
+- **cli**: auto-configure core.hooksPath when .githooks/ exists
+- **core**: issue 111
+- **core**: issue 111
+- **core**: issue 111
+- **core**: issueless planning agent role (PM/Sprint Planner)
+- **dashboard**: rich markdown and Mermaid diagrams in spec review
+- **dashboard**: clickable GitHub issue links across all views
+- **core**: issue 110
+- **core**: SpecStep in pipeline with dashboard approval UI
+- **core**: issue 116
+- **core**: issue 116
+- **core**: Agent Runtime abstraction (support multiple coding agent backends)
+- **core**: issue 169
+- **#167**: fix(dashboard): add CodeRabbit re-review circuit breaker (#177)
+- **dashboard**: add one-click command sync for missing command errors
+- **ci**: auto-approve CI for safe fork PRs from first-time contributors
+- **dashboard**: add sovaConfirm() themed confirmation modal
+- **dashboard**: overhaul agents page with full-queue search and suggestions
+- **dashboard**: overhaul queue page with grouped layout and colored badges
+- **dashboard**: overhaul settings page with toggle switches and improved UX
+- **adapters**: add configurable JIRA status mapping and enrich metadata
+- issue #114
+- issue #114
+- **llm**: add LiteLLM integration as first alternative provider
+- issue #115
+- issue #115
+- feat(core): MCP-based command abstraction (provider-agnostic agent tools)
+- **core**: add MCP server with provider-agnostic agent tools
+- issue #113
+- issue #113
+- **llm**: add LLM Provider abstraction layer for provider-agnostic interface
+- **core**: enhance address-review pipeline, simplify dashboard settings, consolidate external reviews (#129)
+- **dashboard**: overhaul settings page with toggle switches and improved UX
+- **#109**: feat(dashboard): adapter-based PR review state detection for deterministic handoff (#112)
+- **config**: add configurable step_timeout for LLM pipeline steps
+- **dashboard**: add tiered task disclosure and history pagination UI
+- **dashboard**: add pagination to work history endpoint
+- **dashboard**: redesign agent start widget as priority-ordered task list
+- **dashboard**: add role state configuration and dynamic role dropdown
+- feat(dashboard): visual role builder with command-based workflow DAGs
+- **dashboard**: add roles list page and DAG editor UI
+- **dashboard**: add roles API router and service layer
+- **core**: add DAG executor, CustomRole, and async dispatcher fallback
+- **commands**: add inputs/outputs to command frontmatter
+- **db**: add WorkflowDefinition and CommandContract models
+- **pipeline**: add configurable auto-handoff between agent roles
+- **core**: add researcher step pipeline with /research command
+- **commands**: make /issue and /spec commands Jira-aware
+- **commands**: teach address-pr to handle SonarCloud quality gate failures
+- **dashboard**: make agent cards clickable and add history tabs
+- **core**: auto-recover from CI failures in MonitorCIStep
+- **core**: add CI failure log fetching and max_fix_attempts config
+- **commands**: add external review awareness to SOVA-specific commands (#97)
+- **core**: integrate external review tools into developer pipeline (#96)
+- Jira v3 API migration and configurable triage system (#92)
+- **knowledge**: team knowledge sharing across SOVA installations
+- **roles**: implement LLM-powered ResearcherRole
+- **commands**: add /spec command for pre-development planning
+- **config**: add per-issue budget limit to block new spawns
+- **dashboard**: pass --run-id to eliminate wrapper TaskRun
+- **core**: accept --run-id to reuse dashboard-created TaskRun
+- **adapters**: add Jira Cloud adapter and refactor factory to accept ProjectConfig
+- **cli**: add sova doctor and sova commands sync
+- **commands**: add 3 distributable commands, verify-local, and address-pr improvements
+- **knowledge**: add FastAPI/Odoo detection and generic Python persona
+- **dashboard**: redesign settings page with accordion groups and value formatting
+- **dashboard**: add settings metadata registry with grouped config API
+- **commands**: add audit-alignment command for project health audits
+- **roles**: post reviewer findings as inline PR review comments
+- **adapters**: add post_pr_review method for GitHub PR reviews API
+- **core**: add stdin support to shell runner and unified diff parser
+- **dashboard**: add Issue Lifecycle Control system
+- **dashboard**: dynamic PR action buttons with SOVA review verdict
+- **dashboard**: reorganize PR action buttons by review state
+- **dashboard**: show pipeline variant in role display
+- **dashboard**: improve notification system with persistent dismissal
+- **knowledge**: add automatic memory extraction to agent pipelines
+- **dashboard**: add tooltips to action buttons across all pages
+- **dashboard**: add sidebar tooltip sync for collapse toggle
+- **dashboard**: add reusable CSS tooltip system
+- **dashboard**: add collapsible sidebar
+- issue #16
+- **commands**: add merge conflict resolution to integration commands
+- **ipc**: add terminal-notifier support with rich notification context
+- **scheduler**: add health endpoint and document researcher stub
+- **core**: wire RebaseStep into address-review pipeline
+- **core**: add rebase step with LLM-powered conflict resolution
+- **dashboard**: sort queue by priority label and show issue age
+- **db**: add migration 004 for missing indexes
+- **db**: add indexes on project_slug and superseded_by to ORM models
+- **commands**: add health-audit command for deep technical codebase analysis
+- **dashboard**: link queue issue numbers to GitHub
+- **dashboard**: auto-spawn next agent on handoff completion
+- **roles**: dual developer pipeline and reviewer auto-execute handoff
+- **core**: replace terminal pipeline steps with handoff steps
+- **ipc**: add auto_execute flag to HandoffAction for role chaining
+- **dashboard**: persist batch progress bar across page navigation
+- **dashboard**: add parallel batch processing and active batch discovery
+- **dashboard**: show PR link on agent cards in Agents page
+- **core**: add pre-push hook validation step to developer pipeline
+- **dashboard**: add PR status panel and command execution on Agents page
+- **commands**: add /integrate-pr full shipping pipeline
+- **adapters**: add post_pr_comment method for PR-specific comments
+- **dashboard**: add searchable issue selector on Agents page
+- **dashboard**: add PR number input to Agents start panel
+- **cli,dashboard**: add --pr flag to pass PR number directly
+- **roles**: add LGTM verdict for clean reviews
+- **roles**: implement real LLM-based code review in ReviewerRole
+- **git**: add get_pr_diff() and get_pr_files() operations
+- **core**: generate rich PR descriptions with LLM in CreatePRStep
+- **dashboard**: make PR numbers clickable links to GitHub
+- **dashboard**: add dismiss button for interrupted runs banner
+- **adapters**: add GitHub Projects V2 board integration
+- **commands**: add commit instructions to /develop and /review
+- **core**: add CommitStep to workflow pipeline
+- **dashboard**: improve Logs page with structured event rendering
+- **commands**: add confirmation counters to extract-knowledge for cross-session promotion
+- **dashboard**: issue-centric Work view with grouped active runs
+- **dashboard**: unified agent tracking with persistent output
+- **dashboard**: add --reload flag for dev auto-restart
+- **dashboard**: add component library, style guide, and design docs
+- **dashboard**: redesign sidebar with SVG icons and notification overhaul
+- **dashboard**: add CSS variable design system with shared Tailwind config
+- **db**: add Alembic migrations and pre-startup DB backup
+- **core**: add step-level checkpointing and resume for workflow engine
+- **dashboard**: multi-agent command center redesign
+- **dashboard**: add queue batch operations
+- **adapters**: add per-project GitHub auth with GH_TOKEN injection
+- **ci**: add integration test and CI badge
+- **migrate**: add sova migrate config/costs commands
+- **dashboard**: add interrupted runs banner and fix overview completion rate
+- **roles**: claim issue as IN_PROGRESS before developer workflow
+- **dashboard**: add stale run recovery and interrupted status
+- **db**: add PID tracking and issue number normalization to TaskRun
+- **cli**: add sova harden command for issue enrichment
+- **adapters**: add edit_body method to TaskAdapter interface
+- **dashboard**: add activity indicator, notification bell, and checkpoint banner
+- **dashboard**: add settings page with config editor, invariants, and personas
+- **dashboard**: add logs page with level/component/search filtering
+- **dashboard**: add tasks and queue pages with priority-sorted issue queue
+- **dashboard**: restructure app for multi-project mode with per-project process isolation
+- **dashboard**: add home page and setup wizard for project onboarding
+- **dashboard**: add project registry, context vars, and middleware for multi-project support
+- **dashboard**: persist agent runs to DB via control service
+- **dashboard**: add owl logo to sidebar
+- **dashboard**: add favicon assets for browser tab icon
+- **dashboard**: add handoff action panels to control page with tests
+- **dashboard**: add handoff service, API router, and command execution
+- **ipc**: add HandoffAction and DashboardHandoff models with file I/O
+- **cli**: add sova server subgroup, deploy files, and 26 tests
+- **scheduler**: add watch loop, parallel executor, and server daemon
+- **cli**: add sova commands subgroup and install integration
+- **commands**: add command distribution and adaptation module
+- **commands**: add category field to canonical command frontmatter
+- **dashboard**: add 28 tests and CLI command
+- **dashboard**: add Jinja2 templates and static assets
+- **dashboard**: add API routers and FastAPI app factory
+- **dashboard**: add DB-backed services for run, cost, memory, and control
+- **cli**: register all commands in app entry point
+- **cli**: add project, memory, and admin commands
+- **cli**: add PR management commands
+- **cli**: add watch and parallel commands, enhance run with dispatcher
+- **cli**: add triage command
+- **agent**: enhance triage role with heuristic and LLM assessment
+- **knowledge**: add file-based tier loading and tests
+- **knowledge**: add review pattern tracking
+- **knowledge**: add persona detection and loading
+- **sova**: add TaskAssessment model, assess_task() ABC, and triage labels
+- **sova**: implement role-based agent system with dispatcher
+- **sova**: implement knowledge management module
+- **sova**: implement IPC layer for inter-agent communication
+- **sova**: add handoff_json field and NotificationConfig
+- **agent**: improve triage scoring and hardening with issue templates
+- **sova**: add sova run CLI command
+- **sova**: implement workflow engine with DB persistence
+- **sova**: implement workflow steps with gate checks
+- **sova**: add state machine and execution context
+- **commands**: add issue state management to develop-full and after-merge
+- **sova**: implement LLM client and cost tracking
+- **sova**: add LLM data models for Claude CLI interaction
+- **git**: export public API from git module
+- **git**: add worktree lifecycle management
+- **git**: add async git and GitHub CLI operations
+- **agent**: add triage command and artifact-aware change detection
+- **dashboard**: improve navigation UX and settings layout
+- **adapters**: implement TaskAdapter ABC and GitHub adapter
+- **sova**: scaffold Phase 0 foundation: config, DB, utils, CLI
+- **dashboard**: add run journal UI and API endpoints
+- **dashboard**: add persistent run journal for agent processes
+- **agent**: sort issue list by priority labels
+- **dashboard**: improve checkpoint UX for task selection and button feedback
+- add tracked git hooks for commit policy and pre-push CI checks
+- **invariants**: add branch-naming and commit-format checks
+- **dashboard**: add handoff UI, rich checkpoints, and task selection to control page
+- **dashboard**: add handoff endpoints, command execution, and WS streaming
+- **dashboard**: add handoff service for inter-agent state passing
+- **commands**: update core commands and add develop-full workflow
+- **commands**: add shipping pipeline commands
+- **dashboard**: add multi-project support with per-request config
+- merge AGENTS.md and CLAUDE.md templates with enriched content
+- merge Project-instructions commands into unified library
+- initial project setup with full development automation
+
+**Fixes**
+
+- **core**: split link_worktree_env to cut its cognitive complexity and cover its error paths
+- **supervisor**: stop the watchdog killing dashboard command runs as unadopted
+- **dashboard**: stop the Supervisor page throwing on unload
+- **roles**: address SonarCloud finding in tests/test_review_unreviewed_chunks.py
+- **adapters**: address SonarCloud finding in tests/test_jira_adapter.py
+- **core**: address CI failure in Python Tests, Python Tests (py3.14), Python Tests (py3.12)
+- **core**: resolve the LLM provider and agent runtime per project on the hub
+- **cli**: read a secret setting from stdin so it stays out of ps
+- **adapters**: post a Jira project's PR reviews to GitHub
+- **core**: retry a PR diff or file list read that never reached GitHub
+- **scheduler**: address sonarcloud finding in server.py
+- **scheduler**: watch every hub project and report a dead scheduler
+- **supervisor**: stop a hub project's agent in that project's own pool
+- **config**: refuse a shared SOVA_DATABASE_URL across several registered projects
+- **dashboard**: harden proxy auth, CSRF, project registration and logs
+- **dashboard**: pass Jinja values into scripts through tojson
+- **ipc**: keep webhook secrets out of logs and report delivery
+- **config**: mask the MCP token secret in repr and name invalid slugs
+- **core**: hide the database password when adopting a missing run
+- **db**: redact database URL passwords and keep loggers across migrations
+- **core**: exclude the settings stamp file from managed project commits (#1581)
+- **dashboard**: close coroutine leaks behind the warning allowlist (#1577)
+- **core**: trust only the reviewer's findings and validate command names (#1576)
+- **dashboard**: scope handoff clears to an issue and pass project slug (#1575)
+- **dashboard**: ignore stale bot reviews and re-trigger CodeRabbit (#1574)
+- **dashboard**: apply rate limits to every /api route again (#1562)
+- **core**: give tool-free CLI calls a system prompt that says they have no tools
+- **cli**: resume a run with the role it ran as
+- **core**: restore the branch when /rearrange-commits dies part way
+- **dashboard**: import reload_key by name so settings route tests patching the service still apply live updates
+- **core**: redact a whole private key block, not just its BEGIN marker
+- **cli**: fall back to GraphQL in sova board add on unknown owner type
+- **roles**: name why a review chunk went unreviewed, and stop resending a blocked prompt
+- **dashboard**: label content-filtered failures in the reliability report
+- **core**: fall back to the next model when a safety filter blocks a prompt
+- **dashboard**: move the issue to TRIAGED before the spec page re-researches it
+- **core**: address SonarCloud findings raised after CI passes
+- **adapters**: report a failed SonarCloud issue fetch as None
+- **dashboard**: show an agent's CPU as cores busy
+- **dashboard**: answer from the previous dependency graph instead of awaiting a rebuild
+- **dashboard**: keep an issue in review while another linked PR is open
+- **dashboard**: overlay the issue drawer on the Work board instead of narrowing it (#1517)
+- **oversight**: write the run row before persisting its findings (#1509)
+- **core**: kill the whole process tree of a timed-out check command
+- **config**: resolve Jira token from Keychain
+- **cli**: find a multi-project server's PID file from server commands
+- **scheduler**: scope the server PID file to the project without creating .claude
+- **supervisor**: retry failed rebase from Work board
+- **dashboard**: select project runtime for address PR (#1503)
+- **dashboard**: route Codex address PR through host pipeline (#1502)
+- **ipc**: allow dashboard Codex commands network access (#1500)
+- **dashboard**: align Work board stages and ownership
+- **dashboard**: scope Jira PRs by project key
+- **dashboard**: refuse a developer start its state cannot pass, and roll back only what a run set
+- **dashboard**: hide review action once the issue's last PR is no longer open
+- **core**: address CI failure in SonarCloud Analysis, Python Tests, Python Tests (py3.14), Python Tests (py3.12), SonarCloud Analysis
+- **dashboard**: read and save settings for the startup project in single-project mode
+- **dashboard**: stop reporting a restart for supervisor.enabled
+- **dashboard**: scope the agent-status websocket to its /p/{slug} project
+- **dashboard**: ignore stray closing keywords when linking PR to issue
+- **core**: retry a timed-out PR-body call with a smaller diff
+- **dashboard**: sum token usage across every result event in a session
+- **commands**: tell /research to write the body from the current issue
+- **core**: restore the issue body when the research step corrupts it
+- **supervisor**: run rebase PR lookup as the project's GitHub user
+- **cli**: replace removed typer click_type with an Enum transport
+- **commands**: wait for CI by polling checks in pr and integrate-pr
+- **core**: strip tool attribution footer from generated specs
+- **core**: blank CLI commit and PR attribution via a fixed --settings override
+- **core**: address sonarcloud finding in version.py
+- **dashboard**: address sonarcloud finding in app.py
+- **dashboard**: show restart banner when server code is stale
+- **core**: stage commits without the excludes git refuses for ignored runtime paths
+- **core**: drop the stash excludes git refuses for ignored runtime paths
+- **scheduler**: keep agents alive across server restarts, fail degraded health
+- **dashboard**: adopt live agent runs on restart
+- **ipc**: let a restarted server re-attach to a live agent
+- **dashboard**: invalidate config cache after settings writes
+- **cli**: refuse install, setup and migrate-config on an unreadable database
+- **config**: read settings via SOVA_DATABASE_URL and cache load_config
+- **core**: clear untracked files that origin tracks before stashing and switching branches
+- **core**: keep SOVA runtime files out of the sync stash and PR commit
+- **dashboard**: restrict setup wizard paths to configured roots
+- **dashboard**: authenticate telemetry ingest before validating the body
+- **dashboard**: validate the MCP JSON-RPC envelope and echo detectable ids
+- **dashboard**: check websocket Origin on the agent status socket
+- **core**: list only the PR's undone criteria in the Part-of comment
+- **roles**: record a TaskRun and CostRecord for a terminal reviewer run
+- **core**: label provider cost records with the model that served them
+- **roles**: cap each addressed finding in the re-review prompt
+- **core**: cap each review finding's text in the address-review prompt
+- **adapters**: condense CodeRabbit comments before capping them
+- **core**: set pytest-asyncio's fixture loop scope explicitly (#1405)
+- **roles**: let an address-review run past Gate 3 for an open PR
+- **core**: report the installed litellm version in doctor
+- **ipc**: recognize codex-cli 0.166's "API key configured" login status
+- **core**: hand /develop the issue when there is no approved spec
+- **core**: keep the orchestrator's SOVA_DATABASE_URL out of checks and coding agents
+- **dashboard**: leave live unmanaged runs alone in the periodic recovery sweep
+- **config**: let SOVA_<SECTION>_<FIELD> and a SQLite SOVA_DATABASE_URL reach load_config
+- **commands**: move an interactive PR's linked issues to in review
+- **roles**: say the developer dropped a closed PR's number
+- **dashboard**: drop a closed PR a developer start is given
+- **dashboard**: skip a closed PR in the queue's last-run PR fallback
+- **core**: detect phase markers chained with other commands
+- **dashboard**: match Mine filter on PR assignees and set PR github_user
+- **dashboard**: drop a closed PR from recovery and the open-PR poll
+- **core**: ignore merged or closed PRs when resuming or routing a developer run
+- **cli**: record role cost on the task run for roles outside WorkflowEngine (#1369)
+- **core**: count merge-gated check criteria as met in the PR closing decision (#1367)
+- **dashboard**: resolve PR issue by branch when body closes several (#1364)
+- **roles**: review a PR without a linked issue (#1355)
+- **commands**: pass stale-command check on branches editing the command (#1356)
+- **core**: close only the issues a merged PR body closes (#1351)
+- **core**: refresh a reused worktree's rendered commands and skills (#1352)
+- **commands**: remove punctuation double dashes inside fenced blocks (#1349)
+- **supervisor**: stop recording find-task BLOCKED tickets as human-only (#1343)
+- **supervisor**: start throttle loop per project, bound create_pr wait (#1346)
+- **commands**: catch PR files a rebase dropped in integrate-pr (#1344)
+- **core**: make local test runs match CI (#1342)
+- **dashboard**: sort not-started tasks by issue priority before workflow state (#1334)
+- **dashboard**: read and write text files with explicit utf-8 encoding (#1325)
+- **commands**: Fall back to every check in /pr's CI wait when the repo requires none (#1303)
+- **core**: write the RTK hook in the matcher format Claude Code requires (#1301)
+- **mcp**: Unblock the open dependency bump PRs (mcp 2.x, FastAPI 0.156, actions v7) (#1298)
+- **commands**: Verify squash recipes keep what the base gained and guard pr runs (#1282)
+- **commands**: Wait for every required check in /pr's CI wait, not one matched run (#1255)
+- **core**: infer a valid conventional scope for GitHub PR titles (#1250)
+- **dashboard**: Recover from stale-page CSRF rejections after a restart or deploy (#1247)
+- **commands**: harden PR, merge and review workflows and port evolved project improvements (#1172)
+- **commands**: stop appending a self-review note to review-pr comments (#1160)
+- **dashboard**: drop orphaned _crQuotaSyncInterval refs that broke agent page cleanup (#1135)
+- **dashboard**: restore key parameter so the settings page renders (#1118)
+- **supervisor**: hide merged PR dependencies (#1117)
+- **core**: isolate tests from the developer's own .claude/sova.db (#1093)
+- **dashboard**: detect completed address cycles for GitHub-sourced verdicts (#1066)
+- **adapters**: decouple Jira label update from workflow transition match (#1043)
+- **dashboard**: stop liveness sweep from marking successful researcher runs as crashed (#1017)
+- **cli**: stop /integrate-pr from re-running CI on documentation pushes (#1015)
+- **dashboard,db**: repair Logs and Memory pages, both 500ing (#1010)
+- **knowledge**: audit and repair knowledge system gaps and drift (#1007)
+- **commands**: remove benchmark log calls that duplicate SOVA's own DB-tracked run data (#998)
+- **core**: record token usage on every step CostRecord (#980)
+- **dashboard**: fix log viewer toggle behavior and format agent output (#982)
+- **core**: tolerate symlinked commands during worktree sync (#969)
+- **core**: rebase must verify conflict resolution, not assume it (#966)
+- SQLite write-lock deadlock that idled the fleet, plus two supervisor stalls (#959)
+- **dashboard**: detect integrate-pr/approve-merge runs that exit without merging (#958)
+- **supervisor**: reload daemon config snapshot on task queue edits
+- **dashboard**: sweep dead-PID awaiting_approval runs to interrupted
+- **core**: feed the pre-push hook the ref lines git sends on stdin
+- **core**: stop subprocesses from inheriting SOVA stdin
+- **core**: address pre-push hook violations
+- **#903**: harden create_worktree against stale git registrations (#906)
+- **core**: resolve coroutine resource warning in supervisor daemon test (#876)
+- **core**: robust JSON extraction for LLM responses (#870)
+- enable Vertex AI global region and fix supervisor planner (#862)
+- **#849**: unify review output format across ReviewerRole and /review-pr command (#858)
+- **dashboard**: preserve PATH in merge_mcp_env when gh_env is None (#855)
+- **#838**: WorkflowEngine hangs forever when worktree is deleted mid-pipeline (#847)
+- **config**: live config reload for all background daemons without server restart (#846)
+- **supervisor**: make task queue an exclusive filter (#845)
+- **supervisor**: require explicit review approval before auto-integrating PRs (#844)
+- **roles**: harden researcher spawn to prevent pipeline bypass (#832) (#840)
+- **#833**: reduce developer timeout failures (45 runs lost to timeouts) (#841)
+- **supervisor**: config changes from UI/TOML must take immediate effect on running daemons (#839)
+- **core**: pin model aliases to configured version, add availability fallback (#826) (#828)
+- **#782**: avoid redundant LLM enrichment call when triage quality gate fails (#829)
+- **core**: truncate CI failure logs to 12K chars in fix prompts (#827)
+- **oversight**: prevent duplicate issues via config reload and fingerprint dedup (#822)
+- **dashboard**: make settings controls and supervisor toggle functional (#819)
+- **core**: raise fix_timeout default from 180s to 600s (#800)
+- **dashboard**: retry liveness sweep write on SQLite lock contention (#803)
+- restore graph collapse, reduce GitHub API consumption, clean up oversight duplicates (#767)
+- **ipc**: prevent SOVA agent sessions from polluting benchmark JSONL logs (#756)
+- **#691**: queue persistence conflict with git merges + empty-list guard (#704)
+- **#692**: CodeRabbit CHANGES_REQUESTED persists after fixes, blocks state detection (#700)
+- dashboard backfill, fetchAPI POST, label auto-create, oversight attribute (#702)
+- **#677**: pending plan store is not project-scoped, causes cross-project contamination (#683)
+- **#646**: duplicate '## Dependencies' sections in researcher-generated issue bodies (#684)
+- **dashboard**: NEEDS_SPEC shows Research + spec approval transitions to RESEARCHED (#676)
+- **dashboard**: pr-metrics 404 in multi-project mode + critical icon mapping (#675)
+- **core**: close prompt guard bypass in invoke_command and invoke_batch (#667)
+- **supervisor**: approving a spec does not update researcher TaskRun from awaiting_approval (#663)
+- **dashboard**: Mine filter doesn't match JIRA assignees (#612) (#658)
+- **dashboard**: resolve cross-project agent_pool dir from registry (#660)
+- **dashboard**: prevent supervisor queue poll from overwriting just-saved order (#656)
+- **dashboard**: stash guard for worktree isolation + config tolerance + PR #652 findings (#654)
+- **core**: exclude agent-memory from rearrange-commits uncommitted check
+- **dashboard**: remove pr_author_filter, migrate CI billing API, add --multi flag (#634)
+- **core**: orphaned step finalization and interrupted pipeline validation (#628) (#629)
+- **dashboard**: zombie process leak and orphan recovery in agent lifecycle (#620)
+- **core**: copy skills directory to worktrees (#622)
+- **core**: use bypassPermissions instead of auto for headless agents (#615)
+- **supervisor**: epic dependencies should not block child issues (#616)
+- **supervisor**: add rate limit tracking to git/pr.py shell calls (#614)
+- **supervisor**: CHECKPOINT_NEEDED filtered from pending plan, approval UI always empty (#608) (#611)
+- **core**: update _get_cost for LiteLLM completion_cost API change (#589)
+- **adapters**: treat merged PRs as DONE in GitHub adapter (#586)
+- **dashboard**: Jira task avatar photos and PR issue linking (#580)
+- **dashboard**: spec Q/A answers preserved in UI and passed to developer agent (#567)
+- **#522**: _validate_review_pr retains fail-open behavior for no-pr and no-output cases (#546)
+- **dashboard**: sync JS pipeline step arrays to Python definitions (#540)
+- **core**: reject lockfile-only commits and propagate check loop failures in DevelopStep (#532) (#533)
+- **core**: CI state map gaps + dashboard task browser filters (#531)
+- **core**: stash uncommitted changes before rebase to prevent false failures (#527)
+- **#518**: reliable cross-machine PR state via GitHub verdict labels and simplified state computation (#526)
+- **adapters**: migrate Jira pagination from startAt to nextPageToken (#528)
+- **#520**: LLM suggestion widget never fires due to invalid model ID; upgrade to active circuit breaker (#525)
+- **roles**: prevent spurious address-review cycles when reviewer cannot post to GitHub (#502) (#513)
+- **dashboard**: bypass stale review-only handoffs when SOVA already approved (#514)
+- **dashboard**: move GitHub API calls outside DB write lock in liveness sweep (#512)
+- **core**: resolve SOVA review threads when active gh user differs from config (#511)
+- **core**: replace CommitStep with RearrangeCommitsStep in address-review pipeline (#498)
+- **dashboard**: spec_review task cards: button overflow and stale state override (#499)
+- **dashboard**: replace native alert() dialogs with showToast() in all templates (#493)
+- **dashboard**: accept JSON booleans in settings config API (#488)
+- **#482**: lifecycle page does not detect externally merged PRs (#487)
+- **#138**: add error handling to costs page fetch calls (#486)
+- **dashboard**: task list max 8 items with PR priority, quota auto-sync, remove interrupted banner (#479)
+- **supervisor,dashboard**: CodeRabbit quota poll order, supervisor UX improvements, dependency graph tier layout (#477)
+- **dashboard**: treat CANCELLED CI runs as skipped, not failed (#478)
+- supervisor multi-project isolation, label priority, dependency graph (#475)
+- **dashboard**: unblock integrate gate when sova review threads all resolved (#470)
+- **dashboard**: use _try_load_config helper and add subquery regression tests (#473)
+- **supervisor**: stop infinite researcher respawn loop, add failure circuit breaker, fix supervisor page 500 (#471)
+- **commands,config**: address-pr thread resolution + pr_auto_link_issues config field (#458)
+- **supervisor**: prevent researcher re-spawn loop and fix dependency graph rendering (#467)
+- **dashboard**: agent widget persists after completion and cost shows $0.00 (#451)
+- **config**: add pr_auto_link_issues field to CommitConfig (#464)
+- **dashboard**: SOVA verdict overrides stale handoff in work item state (#457)
+- **core**: include untracked files in simplify gate check (#456)
+- **core**: detect untracked files in DevelopStep gate check (#441)
+- **dashboard**: wire max_parallel_agents to AgentPool and add setup navigation (#440)
+- **core**: fetch issue title from adapter when ctx.task is missing in CreatePRStep (#439)
+- **core**: harden SyncStep and RebaseStep against git state failures (#425)
+- **#412**: address-pr outcome validation and pipeline bypass prevention (#423)
+- **core**: improve MonitorCI reliability (timeouts, lint loops, commit guards) (#420)
+- **core**: use gh api directly for PR review findings loading
+- **dashboard**: settings input validation and PR-issue linking fallbacks (#417)
+- **dashboard**: auto-create worktree when branch is checked out in main repo (#419)
+- **core**: address pre-push hook violations
+- **core**: update tests for worktree isolation guards
+- **core**: address pre-push hook violations
+- **dashboard**: address CodeRabbit review findings for PR #408
+- **commands**: post review-pr findings automatically without asking
+- **dashboard**: resolve empty PR list from GraphQL node limit (#406)
+- **dashboard**: cache SOVA verdict lookups to eliminate repeated GitHub API calls
+- **core**: address CodeRabbit review findings in SpecStep
+- **core**: generate specs directly instead of delegating to interactive /spec command
+- **core**: remove duplicate JIRA prefix in PR body template
+- **dashboard**: add periodic stale run recovery every 5 minutes
+- **supervisor**: upgrade watchdog zombie and step-timeout actions to kill
+- **core**: add heartbeat writes, step timeout, and resume idempotency to monitor_ci
+- **core**: make pipeline JIRA-aware for commit, branch, PR, and issue linking
+- **dashboard**: narrow prompt format exception to KeyError/ValueError
+- **dashboard**: guard prompt format, fix cache separator, remove redundant JS field
+- **core**: address pre-push hook violations
+- **core**: guard _extract_failure_detail against non-dict JSON stdout
+- **core**: add --permission-mode auto to headless CLI and improve error reporting
+- **dashboard**: show PR badge in task card when pr_details missing
+- **dashboard**: recover pr_number from DB history when starting a developer run
+- **dashboard**: persist reviewer verdict to DB before handoff file is cleared
+- **core**: adopt existing PR in AssessStep instead of blocking developer run
+- **core**: resolve project root from linked worktree CWD
+- **core**: handle already used by worktree in sync_branch
+- **dashboard**: correct PR_SOVA_PENDING action and detect stale SOVA verdicts
+- **awareness**: replace hardcoded gcal provider check with SCHEDULE category
+- **dashboard**: recover pr_number from DB history when starting a developer run
+- **core**: adopt existing PR in AssessStep instead of blocking developer run
+- **core**: resolve project root from linked worktree CWD
+- **dashboard**: persist reviewer verdict to DB before handoff file is cleared
+- **dashboard**: add integrate-pr to PR_CHANGES_REQUESTED secondary actions
+- **core**: re-raise CancelledError in async watchdog stop (S7497)
+- **core**: address review findings in watchdog module
+- **supervisor**: address pre-push hook violations
+- **supervisor**: reduce cognitive complexity in _evaluate_single
+- **dashboard**: address pre-push hook violations
+- **dashboard**: reset stale SOVA verdict when address-pr completes after review (#369)
+- **dashboard**: extend verdict fallback to cover reviewer role with null handoff_json
+- **dashboard**: guard against empty wt_id in _resolve_issue_worktree
+- **monitoring**: prevent dict-mutation race in _write_loop executor dispatch
+- **db**: WAL mode, migration fast-path, and SQLite busy timeout
+- **dashboard**: upgrade PR_AWAITING_REVIEW to PR_APPROVED when SOVA approves
+- **dashboard**: eliminate DB write lock contention and startup freezes
+- **dashboard**: SOVA verdict drives PR state; scope verdict to current PR
+- **dashboard**: cancel agent IO tasks concurrently in shutdown
+- **ipc**: add 5-second timeout on post-SIGKILL wait in AgentProcess.stop
+- **dashboard**: cancel agent IO tasks concurrently in shutdown
+- **dashboard**: bound merge-role PR check to 15s in recover_stale_runs
+- **dashboard**: use git ref comparison for address-pr outcome validation
+- **dashboard**: validate Closes #N references actual issues, not PRs
+- **ipc**: replace double-dash separator in JXA notification fallback
+- **core**: add missing co2_grams column via migration 018
+- **dashboard**: use STEP_DONE_STATUSES and extract agent I/O cancel helper
+- **dashboard**: cancel WebSocket, batch, and collector tasks during shutdown
+- **dashboard**: detect and fail pipeline-bypassed agent runs
+- **dashboard**: show pulsing bar for agent sentinel step and refresh card metrics
+- **dashboard**: cancel all per-agent tasks during shutdown to prevent reload freeze
+- **core**: add paused to TASK_RUN_TERMINAL to prevent sweep reclassification
+- **config**: enable resource monitoring by default
+- **dashboard**: resolve worktree in start_agent and cancel tasks on shutdown
+- **dashboard**: use total-available for memory display instead of psutil .used
+- **dashboard**: wire synthesized spec actions to execute endpoint
+- **dashboard**: synthesize spec actions when handoff file is missing
+- **dashboard**: use consistent width for agent task card badge area
+- **dashboard**: add post-run outcome validation for command runs
+- **dashboard**: parse review verdict from output lines when no handoff
+- **commands**: use verdict-appropriate review event and add headless guardrails
+- **core**: address pre-push hook violations
+- **dashboard**: extract duplicated literal and remove redundant exception
+- **core**: add branch-based worktree fallback in address-review discovery
+- **dashboard**: resolve issue from PR in start_agent when missing
+- **dashboard**: guard lifecycle linking for non-issue runs
+- **core**: make spec auto-approval idempotent for already-approved specs
+- **dashboard**: document HTTPException 500 in resources router responses
+- **dashboard**: address pre-push hook violations
+- **dashboard**: address CodeRabbit and SonarCloud review findings
+- **dashboard**: address pre-push hook violations
+- **dashboard**: use escapeJsStr for onclick handler string contexts
+- **dashboard**: stop storing command name as issue_number
+- **dashboard**: prevent recover_stale_runs from clobbering paused runs
+- **dashboard**: address review findings in feed, agent_db, batch, and UI
+- **dashboard**: address pre-push hook violations
+- **core**: address PR #307 review findings
+- **ipc**: add pipeline boundary rules to headless agent preamble
+- **core**: re-copy .claude/ artifacts when reusing existing worktree
+- **core**: adopt existing PR from 'already exists' error in CreatePRStep
+- **core**: add branch name fallback to find_pr_for_issue for JIRA issues
+- **dashboard**: mask secrets, fix config save, and fix settings animation
+- **commands**: add simplify.md to distributable catalog
+- **core**: copy .claude/ artifacts into worktrees for gitignored projects
+- **adapters**: preserve ADF heading markers and match Jira-prefixed spec files
+- **core**: address SonarCloud findings in dependency graph and router
+- **core**: address PR #303 review findings
+- **core**: add full test coverage for quota router endpoints
+- **core**: remove redundant ValueError catch and add full test coverage
+- **core**: address CodeRabbit and SonarCloud review findings
+- **core**: address pre-push hook violations
+- **core**: lint fixes for line length and unused import
+- **core**: address remaining SonarCloud S7497 in _finalize_resource_monitoring
+- **core**: address SonarCloud findings and add coverage
+- **cli**: address pre-push hook violations
+- **core**: address CodeRabbit findings and add test coverage for RTK
+- **core**: address pre-push hook violations
+- **core**: thread addressed_findings into panel review path
+- **core**: address PR #287 review: add missing pattern, document limitation
+- **core**: skip spec step when research says issue is already implemented
+- **core**: address pre-push hook violations
+- **core**: address CodeRabbit findings in retrieval module
+- **core**: address pre-push hook violations
+- **core**: reduce cognitive complexity in panel_review.py
+- **core**: reduce cognitive complexity of DevelopStep inner check loop
+- **dashboard**: address review findings from PR #285
+- **dashboard**: let PR review state override stale handoff actions
+- **dashboard**: wrap cost values with parseFloat before toFixed calls
+- **core**: add egress patterns for fine-grained GitHub PATs and Bearer headers
+- **core**: address pre-push hook violations
+- **core**: replace task cancellation with cooperative shutdown in ResourceCollector
+- **core**: address SonarCloud findings in ResourceCollector
+- **core**: address pre-push hook violations
+- **core**: address SonarCloud findings in knowledge module
+- **dashboard**: position planner tooltip to the left to avoid clipping
+- **roles**: harden planner JSON parsing against LLM response variations
+- **dashboard**: address pre-push hook violations
+- **core**: sort imports in test_embeddings.py
+- **core**: address SonarCloud coverage gate failure for embeddings
+- **core**: address SonarCloud float equality finding and cover embeddings.py
+- **core**: address SonarCloud findings in egress filter
+- **dashboard**: address pre-push hook violations
+- **roles**: address pre-push hook violations
+- **core**: address pre-push hook violations
+- **core**: address CodeRabbit findings in test_knowledge_sharing and test_scheduler
+- **dashboard**: update tests for address-pr in ready-to-merge secondary actions
+- **dashboard**: add address-pr action to ready-to-merge state and update roadmap
+- **dashboard**: address CodeRabbit and SOVA review findings
+- **dashboard**: remove redundant str() roundtrip in Decimal cost conversion
+- **core**: use spec_from_file_location for migration 011 import
+- **core**: use patch.object to avoid pkgutil.resolve_name failures in CI
+- **dashboard**: address pre-push hook violations
+- **roles**: preserve model routing reason in triage LLM calls
+- **dashboard**: show untracked routing bucket in costs page
+- **dashboard**: use exception chaining in costs router handlers
+- **dashboard**: address pre-push hook violations
+- **core**: resolve ruff format violation and address remaining review fixes
+- **core**: address CI failure in SonarCloud Analysis
+- **core**: address SonarCloud findings in project.py and setup.py
+- **core**: resolve lint and format violations in planner steps
+- **core**: replace ReDoS-prone regex with string ops in generate_tasks
+- **core**: reduce cognitive complexity in validate_tasks and agent_lifecycle
+- **core**: address review findings in generate_tasks and scan_project
+- **core**: address CodeRabbit review findings in routing and model resolution
+- **core**: address pre-push hook violations
+- **dashboard**: address review findings in approval resume flow
+- **core**: address pre-push hook violations
+- **roles**: remove redundant JSONDecodeError from except clause
+- **core**: address pre-push hook violations
+- **adapters**: auto-create missing GitHub labels and add error handling
+- **core**: address pre-push hook violations
+- **dashboard**: resolve WebSocket test threading deadlock in CI
+- **core**: address CodeRabbit findings in complexity scorer and tests
+- **core**: address pre-push hook violations
+- **core**: address review findings for spec-anchored review
+- **core**: address pre-push hook violations
+- **dashboard**: show live agent status for standalone PR rows
+- **core**: eliminate regex backtracking in prompt guard override pattern
+- **core**: seed OutputWriter line numbers from DB on re-adopted runs
+- **core**: address prompt guard review findings
+- **dashboard**: fix legacy fallback trigger and reduce cognitive complexity
+- **invariants**: remove \bai\b pattern that falsely flags .ai email domains
+- **invariants**: address pre-push hook violations
+- **dashboard**: remove modal backdrop immediately on close
+- **dashboard**: check PR merge status in liveness sweep
+- **dashboard**: finalize DB before removing agent from pool
+- **dashboard**: add exception handling to output reader tasks
+- **dashboard**: validate Jira project key to prevent URL path injection (S7044)
+- **dashboard**: address SonarCloud quality gate failures in setup_service
+- **dashboard**: step detail panel redesign and legacy status compat (#228)
+- **dashboard**: only sync guidelines if previously installed
+- **dashboard**: address SonarCloud quality gate failures
+- **dashboard**: remove Merge Only button, always use Integrate PR
+- **dashboard**: treat "None: ..." as empty open questions in spec parser
+- **dashboard**: add visibilitychange handlers to all dashboard pages
+- **dashboard**: add visibilityAwarePoll helper and sidebar visibility handling
+- **dashboard**: show Ship PR for review-free PRs with CI green
+- **dashboard**: fix empty history and run detail output for command runs
+- **dashboard**: unify PR widget actions and register Tailwind accent colors
+- **dashboard**: fix step index calculation and clean up agent card badges
+- **core**: add RUNNING to TaskStatus and preserve status on TaskRun adoption
+- **dashboard**: address review findings from PR #197
+- **dashboard**: command-based run progress and issue resolution
+- **dashboard**: harden handoff service for integer issue values
+- **docs**: escape Mermaid arrow syntax in roadmap instruction comments
+- **invariants**: add invariant checks to pre-push hook
+- **core**: address pre-push hook violations
+- **invariants**: handle multi-line function signatures in type-hints check
+- apply ruff format to create_pr.py
+- apply ruff format to create_pr.py
+- address SonarCloud quality gate failures
+- eliminate ReDoS hotspot in spec title regex (S5852)
+- address pre-push hook violations
+- resolve ReDoS security hotspot in spec title regex
+- address SonarCloud findings in spec module
+- replace ReDoS-vulnerable regex with linear-time pattern
+- address pre-push hook violations
+- address pre-push hook violations
+- add tests to meet SonarCloud 80% new code coverage threshold
+- extract duplicated string literal to constant in doctor.py
+- address pre-push hook violations
+- **dashboard**: fix queue priority ordering and add phase-based sorting
+- **dashboard**: add input validation to API request models
+- **dashboard**: add keyboard accessibility to Create Role modal (#178)
+- **dashboard**: harden agent lifecycle, CI monitoring, and stale UI (#179)
+- **core**: clear current_step sentinel in ReviewerRole
+- **core**: validate commit message format (#175)
+- **dashboard**: add Escape key support and prevent poll from closing card menus
+- **llm**: fail fast when slash command file is missing
+- **dashboard**: complete human_only badge wiring and guard empty-groups expand
+- **dashboard**: address second-pass CodeRabbit review findings from PR #134
+- **dashboard,adapters**: address CodeRabbit review findings from PR #134
+- agent pipeline postmortem fixes from issues #113, #114, #115 (#170)
+- use asyncio.timeout context manager instead of timeout parameter
+- address review findings
+- address review findings
+- increase MCP test coverage to pass SonarCloud quality gate
+- address pre-push hook violations
+- restore accurate step counts in architecture docs
+- address review findings
+- address CI failure in SonarCloud quality gate (coverage < 80%)
+- update sova.toml.default to use ai_coauthor instead of deprecated no_ai_coauthor
+- address review findings
+- **dashboard**: address PR #94 review findings and improve test coverage
+- **dashboard**: fix role editor static path, remove dead code and stale kwarg
+- **dashboard**: unpack validate_dag tuple in update_role endpoint
+- **ipc**: make headless agent prompt unambiguously execute sova run
+- **roles**: address review findings from PR #99
+- **dashboard**: detect researcher pipeline variant in step progress
+- **ci**: add statuses:write permission for SonarCloud quality gate (#107)
+- **ci**: run coverage for all pull_request_target events (#106)
+- **ci**: enable coverage for pull_request_target from trusted forks
+- **ci**: pass explicit PR parameters to SonarCloud scanner
+- address review findings from PR #103
+- **dashboard**: document HTTPException responses in routers (S8415)
+- **dashboard**: re-raise asyncio.CancelledError and save background tasks (S7497, S7502)
+- **config**: sanitize user-controlled paths (S2083, S6549)
+- **commands**: make integrate-pr knowledge extraction phases actionable
+- **ci**: enable SonarCloud analysis on fork PRs (#102)
+- **ipc**: add autonomy preamble to headless agent spawn (#101)
+- **core**: address-review step falls back to issue-level reviewer lookup
+- **dashboard**: detect review verdict from non-done reviewer runs
+- **dashboard**: persist file-based handoff to DB for command reviews
+- **db**: drop alembic_version before fallback stamp to self-heal bogus versions
+- **dashboard**: detect merged PR before marking integration runs as failed
+- **db**: handle corrupted alembic_version and add migration fallback
+- **core**: transition to in_review when CreatePRStep adopts existing PR
+- **roles**: use pr_number for pipeline variant detection instead of task state
+- **dashboard**: skip in_progress transition for address-review developer spawns
+- **db**: dispose engine pool after Alembic migrations to clear stale schema cache
+- **dashboard,knowledge**: address review findings from PR #85
+- **dashboard**: add unit tests for _milestone_badge queue helper
+- **dashboard**: show milestone badge instead of state priority in queue
+- **dashboard**: scope variant detection to dashboard outer-process TaskRuns
+- **dashboard**: detect address-review pipeline variant from spawn context
+- **dashboard**: query TaskRun status "done" not "completed" in review verdict
+- **adapters,roles**: retry PR review without inline comments before failing
+- **core**: guard diff parser against metadata lines between file diffs
+- **dashboard**: address review findings from PR #80
+- **dashboard**: address review findings from PR #79
+- **dashboard**: kill agent process on mark-failed and guard finalization race
+- **dashboard**: skip in_progress transition for non-developer agents
+- **dashboard**: center sidebar collapse button and keep bell visible when collapsed
+- **dashboard**: show Address Review button for all open PRs and Re-run on completed agents
+- **dashboard**: clear handoff file before auto-executing next action
+- **dashboard**: restore sidebar nav tooltips in collapsed mode
+- **dashboard**: eliminate agents page flickering from polling
+- **dashboard**: auto-recover stale runs and support force bypass in conflict check
+- **dashboard**: move sidebar tooltip overrides after general rules
+- **cli**: resolve linked issue number in sova review-pr
+- **dashboard**: smooth collapsible sidebar close animation
+- **dashboard**: fix collapsible sidebar width and centering
+- address review findings
+- **docs**: address remaining review findings from PR #67
+- address review findings
+- **dashboard**: convert setup_service subprocess calls to async
+- **dashboard**: raise sidebar z-index above main content
+- **dashboard**: prevent duplicate agents and fix handoff issue routing
+- **dashboard**: move business logic to services, fix TOML injection, add error handling
+- **db**: add FK constraints, fix memory validation, deduplicate _TERMINAL
+- **core**: fix gate checks, remove orphaned steps, align cost types
+- **db**: fix session leaks across 31 call sites
+- **dashboard**: pass pr_number to TaskRun on creation, add re-run button for failed agents
+- **core**: prevent duplicate PRs by adopting existing ones in CreatePRStep
+- **dashboard**: add response.ok checks and shared error helper to frontend
+- **dashboard**: replace HTTP 200 error responses with proper status codes
+- **test**: use proper async generator for stdout/stderr line mocks
+- **dashboard**: replace manual session.close() with context managers
+- **roles**: log warnings on reviewer parse failures
+- **ipc**: replace AppleScript with JXA for injection-safe notifications
+- **git**: catch suspicious files in subdirectories during commit
+- **git**: add path validation to worktree creation and file copy
+- **ci**: add feature branch push triggers to CI workflow
+- **dashboard**: use 'developer' instead of 'auto' as default role
+- **core**: filter agent artifacts from commit step untracked files
+- **core**: populate ctx.task in sync step for --force/--resume runs
+- **core**: add no-checks grace period to monitor_ci step
+- **dashboard**: exclude superseded paused runs from active work view
+- **dashboard**: scope batch progress bar to active project
+- **dashboard**: send macOS notifications on all agent completions
+- **config**: narrow TaskSourceConfig.type Literal to implemented adapters
+- **db**: make migration 003 idempotent for pre-existing columns
+- **config**: add Pydantic Field constraints to numeric config fields (#66)
+- **config**: add Pydantic Field constraints to numeric config fields
+- **db**: add migration 003 for project_slug on task_assessments
+- **infra**: add Python user-site fallback for ruff in pre-push hook
+- **infra**: resolve ruff and pytest paths in Makefile
+- **dashboard**: keep cost chart date labels inside widget
+- **dashboard**: correct daily cost chart rendering and data source
+- **config**: load notification section from sova.toml
+- **commands**: remove GitHub review approval requirement from shipping commands
+- **commands**: improve address-pr commit guidance and review scoring
+- **roles**: post review findings to PR, replace issue comments with body edits
+- **dashboard,roles**: address review findings from /review-full
+- **dashboard**: display clean role names for command-based runs
+- **commands**: teach address-pr to read SOVA reviewer handoff findings
+- **dashboard**: add standalone handoff action panel on Agents page
+- **roles**: reviewer auto-discovers PR when not provided in context
+- **core**: improve CreatePRStep fallback body and add PR assignment
+- **core**: add suspicious-file guard to git commit and assign_pr function
+- **core**: fix CI monitoring using wrong gh pr checks field names
+- **dashboard**: prevent duplicate agents for the same issue
+- **core**: persist worktree_path and branch_name on all workflow exit paths
+- **core**: replace removed structlog.get_level_from_name with stdlib logging levels
+- **core**: add self_review gate check, failure-aware dashboard notifications
+- **core**: handle existing branches in worktree creation
+- **dashboard**: ensure UTC timezone in API timestamp serialization
+- **config**: include data files in package distribution
+- **dashboard**: use space-separated RGB values for Tailwind alpha support
+- **dashboard**: correct import paths and attribute names in queue_service
+- **dashboard**: handle missing project dir gracefully in multi-project mode
+- **dashboard**: add mark-failed action and step-level CostRecords
+- **dashboard**: use TaskRun for cost totals and fix completion rate
+- **cli**: handle SSH host aliases in sova setup repo detection
+- **dashboard**: fix agent control output and entry point
+- **agent**: prevent Docker port collisions in worktrees
+- **sova**: harden develop gate check and remove PR body branding
+- **cli**: use get_developer_steps instead of removed build_pipeline
+- **sova**: guard against malformed git rev-list output in push gate
+- **agent**: prevent stdin consumption in triage and harden loops
+- **dashboard**: fix config table overflow on settings page
+- **agent**: clean up stale personas and commands during install/update
+- **agent**: resolve shellcheck warnings in install.sh and jira.sh
+- **dashboard**: pass --update flag from setup UI to install.sh
+- **agent**: add legacy migration and sync commands in --update mode
+- **dashboard**: resolve ruff lint and format issues
+- **agent**: use GraphQL for unresolved threads and add backlog option
+- add executable permissions to adapter scripts
+- **agent**: resolve shellcheck errors in orchestrator

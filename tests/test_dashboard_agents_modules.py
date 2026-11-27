@@ -133,9 +133,19 @@ class TestDashboardScriptsParse:
         job = ci[ci.index("  lint-static:") : ci.index("\n  python-lint:")]
         assert "run: make lint-js" in job
 
-    @pytest.mark.parametrize("broken", ["app.js", "js/pages/agents/broken.js"])
-    def test_make_lint_js_fails_on_a_syntax_error(self, tmp_path: Path, broken: str) -> None:
-        """The target itself, run against a throwaway tree, exits non-zero for a bad script or module."""
+    @pytest.mark.parametrize(
+        ("broken", "source"),
+        [
+            ("static/app.js", "function (\n"),
+            ("static/js/pages/agents/broken.js", "function (\n"),
+            (
+                "templates/broken.html",
+                "<p>{{ title }}</p>\n<script>\nconst x = {{ x|tojson }};\nfunction (\n</script>\n",
+            ),
+        ],
+    )
+    def test_make_lint_js_fails_on_a_syntax_error(self, tmp_path: Path, broken: str, source: str) -> None:
+        """The target itself, run against a throwaway tree, exits non-zero for a bad script, module or template."""
         _require_node("node is required to run make lint-js")
         if shutil.which("make") is None:
             pytest.skip("make is required to run make lint-js")
@@ -143,14 +153,20 @@ class TestDashboardScriptsParse:
         (static / "js" / "pages" / "agents").mkdir(parents=True)
         (static / "ok.js").write_text("var ok = 1;\n", encoding="utf-8")
         (static / "js" / "pages" / "agents" / "ok.js").write_text("export var ok = 1;\n", encoding="utf-8")
-        shutil.copy(DASHBOARD_DIR.parents[1] / "Makefile", tmp_path / "Makefile")
+        templates = tmp_path / "sova" / "dashboard" / "templates"
+        templates.mkdir()
+        (templates / "ok.html").write_text("<script>\nvar ok = {{ ok|tojson }};\n</script>\n", encoding="utf-8")
+        repo_root = DASHBOARD_DIR.parents[1]
+        shutil.copy(repo_root / "Makefile", tmp_path / "Makefile")
+        (tmp_path / ".github" / "scripts").mkdir(parents=True)
+        shutil.copy(repo_root / ".github" / "scripts" / "lint_inline_js.py", tmp_path / ".github" / "scripts")
 
         clean = subprocess.run(
             ["make", "lint-js"], cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False
         )
         assert clean.returncode == 0, clean.stdout + clean.stderr
 
-        (static / broken).write_text("function (\n", encoding="utf-8")
+        (tmp_path / "sova" / "dashboard" / broken).write_text(source, encoding="utf-8")
         failed = subprocess.run(
             ["make", "lint-js"], cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False
         )

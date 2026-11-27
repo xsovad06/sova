@@ -1,4 +1,4 @@
-.PHONY: serve dev test lint lint-bash lint-py lint-js lint-imports format check install-deps setup help css css-watch marketplace commands-render skills-render test-ci
+.PHONY: serve dev test lint lint-bash lint-py lint-js lint-imports format check install-deps sync setup help css css-watch marketplace commands-render skills-render test-ci next-version changelog
 
 SHELL := /bin/bash
 
@@ -41,16 +41,16 @@ test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 		bash "$$f" --help >/dev/null 2>&1 && echo "ok" || echo "FAIL"; \
 	done
 
-test-py: ## Run pytest suite (excludes runtime/stress/chaos/evaluation)
-	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos and not evaluation" -n $(PYTEST_WORKERS)
+test-py: ## Run pytest suite (excludes runtime/evaluation)
+	$(PYTEST) tests/ -v -m "not runtime and not evaluation" -n $(PYTEST_WORKERS)
 
 test-ci: ## Run the exact pytest invocation CI's matrix legs and `make check` all use (coverage, sys.monitoring core, full marker set)
 	COVERAGE_CORE=sysmon $(PYTEST) tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60
 
-test-runtime: ## Run runtime, stress, and chaos tests (manual)
-	$(PYTEST) tests/ -v -m "runtime or stress or chaos" --timeout=120
+test-runtime: ## Run runtime tests (manual)
+	$(PYTEST) tests/ -v -m "runtime" --timeout=120
 
-test-all: ## Run ALL tests including runtime/stress/chaos
+test-all: ## Run ALL tests including runtime
 	$(PYTEST) tests/ -v --timeout=120
 
 test-codex-smoke: ## Run the opt-in Codex CLI smoke test (requires: codex CLI installed and logged in)
@@ -77,7 +77,7 @@ lint-tree: ## Whole-tree invariant scans (every tracked file, not just a diff); 
 	bash invariants/no-double-dash.sh --all .
 	bash invariants/file-encoding.sh --all .
 
-lint-js: ## Syntax-check dashboard JS (static/*.js as scripts, static/js/**/*.js as ES modules); needs node
+lint-js: ## Syntax-check dashboard JS (static/*.js as scripts, static/js/**/*.js as ES modules, inline template <script> blocks with Jinja stripped); needs node
 	@command -v node >/dev/null || { echo "lint-js: node is required"; exit 1; }
 	@for f in $$(find sova/dashboard/static -maxdepth 1 -name '*.js' ! -name '*.min.js' | sort); do \
 		node --check "$$f" || { echo "lint-js: syntax error in $$f"; exit 1; }; \
@@ -85,6 +85,7 @@ lint-js: ## Syntax-check dashboard JS (static/*.js as scripts, static/js/**/*.js
 	@for f in $$(find sova/dashboard/static/js -name '*.js' | sort); do \
 		node --input-type=module --check < "$$f" || { echo "lint-js: syntax error in $$f"; exit 1; }; \
 	done
+	@python3 .github/scripts/lint_inline_js.py sova/dashboard/templates
 
 # ── Formatting ────────────────────────────────────────────────
 
@@ -94,11 +95,15 @@ format: ## Auto-format Python code
 
 # ── CSS ───────────────────────────────────────────────────────
 
+# An exact version, so the checked-in bundle is reproducible: tests/test_tailwind_bundle.py rebuilds it
+# with this same package and compares, and a floating `@3` would fail that test on every new 3.x release.
+TAILWIND := tailwindcss@3.4.19
+
 css: ## Rebuild Tailwind CSS (run after changing template classes)
-	npx tailwindcss@3 -o sova/dashboard/static/tailwind.min.css --minify
+	npx --yes $(TAILWIND) -o sova/dashboard/static/tailwind.min.css --minify
 
 css-watch: ## Watch and rebuild Tailwind CSS on template changes
-	npx tailwindcss@3 -o sova/dashboard/static/tailwind.min.css --minify --watch
+	npx --yes $(TAILWIND) -o sova/dashboard/static/tailwind.min.css --minify --watch
 
 # ── Marketplace ───────────────────────────────────────────────
 
@@ -111,6 +116,14 @@ commands-render: ## Regenerate .claude/commands/ from sova/commands/data/command
 skills-render: ## Regenerate .agents/skills/ from sova/commands/data/commands/ and sova/commands/data/skills/ (run after editing a managed command or skill)
 	python3 -m sova.commands.skill_render
 
+# ── Release ───────────────────────────────────────────────────
+
+next-version: ## Print the next release version the conventional commits since the last vX.Y.Z tag call for
+	@python3 scripts/changelog.py next-version
+
+changelog: ## Regenerate CHANGELOG.md from conventional commits; RELEASE=X.Y.Z titles the unreleased commits as that release
+	python3 scripts/changelog.py changelog $(if $(RELEASE),--release $(RELEASE))
+
 # ── Setup ─────────────────────────────────────────────────────
 
 setup: install-deps ## Set up development environment (deps + hooks)
@@ -119,3 +132,13 @@ setup: install-deps ## Set up development environment (deps + hooks)
 
 install-deps: ## Install/update all dependencies
 	pip install -q -e ".[dev]"
+
+# Extra pip arguments for `make sync`, e.g. SYNC_PIP_ARGS="--user --break-system-packages" outside a venv.
+SYNC_PIP_ARGS ?=
+
+sync: ## Install exactly the versions in uv.lock, as CI does (`uv export --locked --extra dev`); needs uv
+	@command -v uv >/dev/null || { echo "sync: uv is required (https://docs.astral.sh/uv/)"; exit 1; }
+	@constraints=$$(mktemp) && \
+		uv export --locked --extra dev --no-emit-project --no-hashes --format requirements.txt -o "$$constraints" && \
+		python3 -m pip install $(SYNC_PIP_ARGS) -c "$$constraints" -e ".[dev]"; \
+		status=$$?; rm -f "$$constraints"; exit $$status

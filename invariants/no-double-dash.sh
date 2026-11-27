@@ -143,10 +143,20 @@ check_candidates() {
 }
 
 if [[ "$mode" == "all" ]]; then
-  while IFS= read -r -d '' f; do
-    [[ -f "$WORKTREE_DIR/$f" ]] || continue
+  # One git grep narrows the tracked files to those holding the marker at all, so the per-file
+  # awk and exemption checks run on a handful of files instead of forking once per tracked file
+  # (which took about a minute and is part of `make lint`, so of the pre-push hook). Exit 1 is
+  # git grep's "no match"; anything above it is a real failure and must not read as a clean tree.
+  grep_status=0
+  marked_files=$(git -C "$WORKTREE_DIR" grep -l -z -E -e "$DD_RE" -- "${PATHSPECS[@]}" | tr '\0' '\n') || grep_status=$?
+  if [[ "$grep_status" -gt 1 ]]; then
+    echo "no-double-dash: git grep failed (exit $grep_status)" >&2
+    exit 1
+  fi
+  while IFS= read -r f; do
+    [[ -n "$f" && -f "$WORKTREE_DIR/$f" ]] || continue
     check_candidates "$f" < <(extract_marked_lines "$WORKTREE_DIR/$f")
-  done < <(git -C "$WORKTREE_DIR" ls-files -z -- "${PATHSPECS[@]}")
+  done <<< "$marked_files"
 else
   changed_files=$(git -C "$WORKTREE_DIR" diff --name-only "origin/$BASE_BRANCH" -- "${PATHSPECS[@]}" 2>/dev/null || true)
   [[ -z "$changed_files" ]] && exit 0

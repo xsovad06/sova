@@ -1,4 +1,4 @@
-"""Shared fixtures for runtime, stress, and chaos tests."""
+"""Shared fixtures for runtime tests."""
 
 from __future__ import annotations
 

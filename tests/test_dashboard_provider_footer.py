@@ -20,6 +20,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sova.dashboard.services import setup_service
+from sova.utils.version import get_version
 from tests.conftest import DASHBOARD_DIR
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
@@ -177,8 +178,9 @@ class TestSidebarFooterMarkup:
         footer = _footer_html(resp.text)
         assert 'id="auth-widget-user"' in footer
         assert "xsovad06" in footer
-        assert footer.index('id="auth-widget-toggle"') < footer.index("SOVA v0.1.0")
-        assert footer.index("SOVA v0.1.0") < footer.index('id="auth-widget-panel"')
+        version_label = f"SOVA v{get_version()}"
+        assert footer.index('id="auth-widget-toggle"') < footer.index(version_label)
+        assert footer.index(version_label) < footer.index('id="auth-widget-panel"')
 
     async def test_unset_github_user_omits_the_segment(self, client: AsyncClient) -> None:
         with patch("sova.dashboard.services.setup_service.get_github_user", return_value=""):
@@ -223,7 +225,8 @@ class TestSidebarFooterMarkup:
         assert text_wrapper
         assert 'id="auth-widget-label"' in text_wrapper.group(1)
         # ... and the version line uses .sidebar-hide so a collapsed footer is one line tall
-        assert re.search(r'class="[^"]*\bsidebar-hide\b[^"]*">SOVA v0\.1\.0<', text_wrapper.group(1))
+        version_line = rf'class="[^"]*\bsidebar-hide\b[^"]*">SOVA v{re.escape(get_version())}<'
+        assert re.search(version_line, text_wrapper.group(1))
 
     async def test_manage_connections_link_unchanged(self, client: AsyncClient) -> None:
         resp = await client.get("/work")

@@ -121,7 +121,7 @@ from sova.dashboard.settings_meta import get_meta as get_setting_meta
 from sova.db.session import close_db, get_session, init_db, init_db_for_project
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
-from sova.utils.version import get_code_staleness, record_startup_code_sha
+from sova.utils.version import get_code_staleness, get_version, record_startup_code_sha
 
 log = get_logger(component="dashboard.app")
 
@@ -1270,6 +1270,8 @@ def create_app(
     templates.env.globals["nav_links"] = _nav_links
     templates.env.globals["app_theme_color"] = _APP_THEME_COLOR
     templates.env.globals["github_user"] = _footer_github_user
+    # The installed version (derived from git tags by setuptools-scm), so the footer never shows a stale literal.
+    templates.env.globals["sova_version"] = get_version
     templates.env.globals["priority_icon"] = priority_icon
     templates.env.globals["priorities_json"] = priorities_json
     # A page control's label and tooltip come from the settings registry, so they match the Settings page.

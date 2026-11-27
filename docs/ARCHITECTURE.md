@@ -72,7 +72,7 @@ sova/
   .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (direct-install source, points at plugins/sova)
   plugins/sova/                    # Standalone Claude Code plugin: subset of commands (develop, spec, review, pr, debug, test) adapted for any project without installing SOVA
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
-  .github/scripts/                 # CI gate scripts (bash, unit-tested from tests/)
+  .github/scripts/                 # CI gate scripts (bash, plus the stdlib-Python inline template JS check; unit-tested from tests/)
   invariants/                      # Pre-push constraint check scripts (bash)
   knowledge/
     KNOWLEDGE.md                   # 4-tier knowledge management system

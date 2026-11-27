@@ -32,8 +32,10 @@ make serve                          # Start web UI at http://localhost:8111
 # Development
 make check                          # Run all linters + tests (same pytest invocation as CI via make test-ci; see docs/testing-guidelines.md)
 make test                           # Run bash + python tests
-make lint                           # ShellCheck + Ruff + dashboard JS syntax check (node --check) + import layering contract + whole-tree invariant scans
+make lint                           # ShellCheck + Ruff + dashboard JS syntax check (node --check, inline template scripts too) + import layering contract + whole-tree invariant scans
 make format                         # Auto-format Python code
+make sync                           # Install exactly the uv.lock versions CI installs (`uv export --locked --extra dev`); `sova doctor` warns on drift
+make changelog RELEASE=X.Y.Z        # Regenerate CHANGELOG.md (`make next-version` picks X.Y.Z from the commits; version comes from git tags)
 make marketplace                    # Regenerate plugins/sova/ from sova/commands/data/commands/ (run after editing a published command)
 make commands-render                # Regenerate .claude/commands/ from sova/commands/data/commands/ (run after editing a managed command)
 make skills-render                  # Regenerate .agents/skills/ from sova/commands/data/commands/ and sova/commands/data/skills/ (run after editing a managed command or skill)

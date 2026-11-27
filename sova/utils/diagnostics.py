@@ -11,6 +11,7 @@ rather than the whole report.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import importlib.util
 import inspect
 import json
@@ -18,10 +19,14 @@ import platform
 import re
 import shutil
 import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
@@ -53,6 +58,13 @@ _LABEL_CONFIGURED_MODELS = "configured models"
 _LABEL_AGENT_RUNTIME = "agent runtime"
 _LABEL_DATABASE_SCHEMA = "database schema"
 _LABEL_AWARENESS_PROVIDERS = "awareness providers"
+_LABEL_DEPENDENCY_LOCK = "dependency lock"
+
+# uv.lock of the SOVA checkout this code runs from. A wheel install ships no lock, so the drift check has
+# nothing to compare against there and reports no row at all.
+_SOURCE_LOCK = Path(__file__).resolve().parents[2] / "uv.lock"
+# How many drifted packages the row names before summarizing the rest as a count.
+_LOCK_DRIFT_SHOWN = 5
 
 # Bounds each awareness provider health check so a single hung provider
 # (e.g. a stalled Gmail or Calendar network call) can't block the caller
@@ -166,6 +178,57 @@ def _check_rtk() -> list[DiagnosticCheck]:
     rtk_path = shutil.which("rtk")
     detail = rtk_path or "not found, optional context compression tool"
     return [DiagnosticCheck("rtk", bool(rtk_path), f"(optional) {detail}", False)]
+
+
+def _same_version(installed: str, locked: str) -> bool:
+    try:
+        return Version(installed) == Version(locked)
+    except InvalidVersion:
+        return installed == locked
+
+
+def _check_dependency_lock(lock_path: Path = _SOURCE_LOCK) -> list[DiagnosticCheck]:
+    """Warn when an installed package's version is not the one SOVA's uv.lock pins.
+
+    CI installs exactly the locked versions (``make sync`` does the same locally), so an environment that
+    drifted from the lock is testing different code than CI. Only packages that are both installed and in
+    the lock are compared. A package the lock resolves differently per platform has several entries, and
+    matching any of them counts. No lock file (a wheel install) means no row: there is nothing to compare.
+    A lock that exists but cannot be read is a warning, not that silence.
+    """
+    if not lock_path.is_file():
+        return []
+    lock_text = read_text_or_none(lock_path)
+    if lock_text is None:
+        return [DiagnosticCheck(_LABEL_DEPENDENCY_LOCK, False, f"cannot read {lock_path}", False)]
+    try:
+        lock = tomllib.loads(lock_text)
+    except tomllib.TOMLDecodeError as exc:
+        return [DiagnosticCheck(_LABEL_DEPENDENCY_LOCK, False, f"cannot parse {lock_path}: {exc}", False)]
+
+    locked: dict[str, set[str]] = {}
+    for package in lock.get("package", []):
+        if "name" in package and "version" in package:
+            locked.setdefault(canonicalize_name(package["name"]), set()).add(package["version"])
+
+    drifted: list[str] = []
+    seen: set[str] = set()
+    for dist in importlib.metadata.distributions():
+        name = canonicalize_name(dist.metadata["Name"] or "")
+        versions = locked.get(name)
+        if not versions or name in seen:
+            continue
+        seen.add(name)
+        if not any(_same_version(dist.version, version) for version in versions):
+            drifted.append(f"{name} {dist.version} (lock {', '.join(sorted(versions))})")
+
+    if not drifted:
+        return [DiagnosticCheck(_LABEL_DEPENDENCY_LOCK, True, f"{len(seen)} installed packages match uv.lock", False)]
+    drifted.sort()
+    shown = "; ".join(drifted[:_LOCK_DRIFT_SHOWN])
+    more = f"; and {len(drifted) - _LOCK_DRIFT_SHOWN} more" if len(drifted) > _LOCK_DRIFT_SHOWN else ""
+    detail = f"{len(drifted)} installed outside uv.lock: {shown}{more}; run: make sync"
+    return [DiagnosticCheck(_LABEL_DEPENDENCY_LOCK, False, detail, False)]
 
 
 async def _check_git_hooks(project_dir: Path) -> DiagnosticCheck:
@@ -1007,6 +1070,9 @@ async def run_all_checks(project_dir: Path) -> list[DiagnosticCheck]:
     checks.extend(await _guarded(_LABEL_CLAUDE_CLI, _check_claude_cli))
     checks.extend(await _guarded("terminal-notifier", _check_terminal_notifier))
     checks.extend(await _guarded("rtk", _check_rtk))
+    # In a thread: parsing uv.lock and scanning every installed distribution takes ~0.1 s, which would
+    # otherwise block the dashboard's event loop on each health-panel refresh.
+    checks.extend(await _guarded(_LABEL_DEPENDENCY_LOCK, asyncio.to_thread, _check_dependency_lock))
 
     checks.extend(await _guarded(_LABEL_GIT_IDENTITY, _check_git_identity, project_dir))
     checks.extend(await _guarded(_LABEL_GIT_HOOKS, _check_git_hooks, project_dir))

@@ -54,3 +54,17 @@ After Fix:  13 runs, 2 failed (15.4%)
 **Related**:
 - Issue #710: SOVA project failure rate audit
 - Issues #687, #699: Timeout fix that resolved the systemic issue
+
+## Releases
+
+### `changelog.py`
+
+Generates `CHANGELOG.md` and the next release version from conventional commits (#1388). Run it through the Makefile:
+
+```bash
+make next-version              # e.g. 0.2.0: feat bumps minor, anything else patch, a breaking change major (minor before 1.0)
+make changelog                 # Unreleased commits under "Unreleased"
+make changelog RELEASE=0.2.0   # The same commits titled as release 0.2.0, when cutting it
+```
+
+Only `feat`, `fix` and breaking commits are listed. The release procedure is in CONTRIBUTING.md, "Releases".

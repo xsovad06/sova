@@ -25,6 +25,7 @@ Maintainer, collaborator, and bot pull requests are never evaluated. If a genuin
 - `git`
 - `shellcheck` (for bash linting: `brew install shellcheck` on macOS)
 - `node` (for the dashboard JS syntax check in `make lint`: `brew install node` on macOS; `make lint` fails without it)
+- [`uv`](https://docs.astral.sh/uv/) (for `make sync`, which installs the exact dependency versions CI uses: `brew install uv` on macOS)
 
 **Optional** (for AI-assisted workflows):
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`): powers SOVA's slash commands and agent orchestration
@@ -35,8 +36,11 @@ Maintainer, collaborator, and bot pull requests are never evaluated. If a genuin
 git clone https://github.com/xsovad06/sova.git
 cd sova
 make setup    # Installs deps + configures git hooks
+make sync     # Pin the environment to uv.lock, exactly as CI installs it
 make check    # Verify everything works
 ```
+
+`make sync` runs the same `uv export --locked --extra dev` CI runs and installs that as pip constraints. Outside a virtualenv, pass pip's flags through: `make sync SYNC_PIP_ARGS="--user --break-system-packages"`. `sova doctor` warns ("dependency lock") when an installed package has drifted from `uv.lock`.
 
 ### Fork Setup (external contributors)
 
@@ -74,7 +78,7 @@ git push origin main
 ```bash
 make check    # Lint + test (close to CI, run before submitting PR; see docs/testing-guidelines.md for what it does not cover)
 make test     # Run all tests
-make lint     # ShellCheck + Ruff + dashboard JS syntax check (needs node) + import layering contract + whole-tree invariant scans
+make lint     # ShellCheck + Ruff + dashboard JS syntax check, inline template scripts included (needs node) + import layering contract + whole-tree invariant scans
 make format   # Auto-format Python code
 ```
 
@@ -83,7 +87,7 @@ All checks must pass before submitting a PR. The CI pipeline runs the same check
 ### Environment Health Check
 
 ```bash
-sova doctor   # Checks Python, git, gh CLI, hooks, config
+sova doctor   # Checks Python, git, gh CLI, hooks, config, dependency drift from uv.lock
 ```
 
 ## Code Style
@@ -125,7 +129,7 @@ Examples:
 - `fix(dashboard): correct cost tracking calculation`
 - `docs(readme): update installation instructions`
 
-**Enforced by git hooks**: the `commit-msg` hook rejects commits with `Co-Authored-By:` lines or AI branding. The `pre-push` hook runs lint and format checks before pushing.
+**Enforced by git hooks**: the `commit-msg` hook rejects commits with `Co-Authored-By:` lines or AI branding. The `pre-push` hook runs `make lint` (the same linters as CI), command frontmatter, script permissions, the invariants and a gitleaks scan before pushing.
 
 ## Commit Signing (optional)
 
@@ -159,6 +163,19 @@ git config --global commit.gpgsign true
 git push origin feat/my-feature
 gh pr create --repo xsovad06/sova
 ```
+
+## Releases
+
+The version comes from git tags through `setuptools-scm`; there is no version field to edit. To cut a release (maintainers):
+
+```bash
+make next-version                 # The version the conventional commits since the last tag call for
+make changelog RELEASE=X.Y.Z      # Regenerate CHANGELOG.md with the unreleased commits under X.Y.Z
+make marketplace                  # The plugin's version follows the newest CHANGELOG release
+git tag vX.Y.Z                    # After the CHANGELOG commit lands on main, then push the tag
+```
+
+`next-version` bumps minor for a `feat`, patch otherwise, and major for a breaking change (`type!:` or a `BREAKING CHANGE:` footer; minor before 1.0). The first release is 0.1.0. A maintainer may choose another number; pass it as `RELEASE`.
 
 ## Reporting Issues
 

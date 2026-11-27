@@ -1,6 +1,6 @@
 [project]
 name = "sova"
-version = "0.1.0"
+dynamic = ["version"]
 description = "SOVA: Software Orchestration Via Agents"
 readme = "README.md"
 license = "Apache-2.0"
@@ -14,17 +14,16 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
     "typer>=0.29.2,<1.0",
-    "fastapi>=0.165.0,<0.166",
+    "fastapi>=0.165.0,<1.0",
     "starlette>=1.10.0,<2.0",
     "uvicorn[standard]>=0.54.0,<1.0",
-    "sqlalchemy[asyncio]>=2.1.9,<2.2",
+    "sqlalchemy[asyncio]>=2.1.9,<3.0",
     "alembic>=1.13,<2.0",
     "pydantic>=2.14.4,<3.0",
     "pydantic-settings>=2.16.3,<3.0",
@@ -77,8 +76,14 @@ dev = [
 sova = "sova.cli.app:app"
 
 [build-system]
-requires = ["setuptools>=84.2.1"]
+requires = ["setuptools>=84.2.1", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
+
+# The version comes from the nearest `vX.Y.Z` git tag (a commit past it builds as a `.devN`
+# version). fallback_version covers a build with no git metadata at all, such as an sdist
+# unpacked without its PKG-INFO; it is a dev version so it can never pass for a release.
+[tool.setuptools_scm]
+fallback_version = "0.0.0.dev0"
 
 [tool.setuptools.packages.find]
 include = ["sova*"]
@@ -113,8 +118,6 @@ asyncio_default_fixture_loop_scope = "function"
 timeout = 60
 markers = [
     "runtime: tests requiring real process lifecycle (deselect with -m 'not runtime')",
-    "stress: high-concurrency stress tests (deselect with -m 'not stress')",
-    "chaos: failure injection and crash recovery tests (deselect with -m 'not chaos')",
     "codex_smoke: opt-in smoke tests against a real Codex CLI (set SOVA_CODEX_SMOKE=1; deselect with -m 'not codex_smoke')",
     "evaluation: opt-in model-evaluation harness tests against live providers (set SOVA_EVAL_LIVE=1; deselect with -m 'not evaluation')",
     "slow(reason): slow by nature; exempt from SOVA_TEST_DURATION_BUDGET (tests/duration_budget.py), and the reason is required",

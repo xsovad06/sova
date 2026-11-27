@@ -9,62 +9,24 @@ cd "$REPO_ROOT"
 
 errors=0
 
-# Resolve ruff binary once
-RUFF=""
-if command -v ruff &>/dev/null; then
-  RUFF="ruff"
-elif [[ -x ".venv/bin/ruff" ]]; then
-  RUFF=".venv/bin/ruff"
-else
-  _user_bin="$(python3 -m site --user-base 2>/dev/null)/bin"
-  if [[ -x "$_user_bin/ruff" ]]; then
-    RUFF="$_user_bin/ruff"
-  fi
-fi
-
-run_ruff() {
-  if [[ -z "$RUFF" ]]; then
-    echo "  SKIP (ruff not installed)"
-    return 0
-  fi
-  if $RUFF "$@" 2>&1; then
-    echo "  PASS"
-  else
-    echo "  FAIL"
-    errors=$((errors + 1))
-  fi
-}
-
 echo "=== Pre-push CI checks ==="
 
-# 1. ShellCheck
+# 1. Linters: the same `make lint` CI's lint steps and `make check` run (ShellCheck on
+# invariants/ and .github/scripts/, Ruff, dashboard JS including inline template
+# scripts, import layering, whole-tree invariant scans), so the hook cannot drift
+# from CI by re-implementing a subset of them.
 echo ""
-echo "[1/7] ShellCheck..."
-if command -v shellcheck &>/dev/null; then
-  if shellcheck --severity=warning \
-    invariants/*.sh 2>&1; then
-    echo "  PASS"
-  else
-    echo "  FAIL"
-    errors=$((errors + 1))
-  fi
+echo "[1/5] make lint..."
+if make lint 2>&1; then
+  echo "  PASS"
 else
-  echo "  SKIP (shellcheck not installed)"
+  echo "  FAIL"
+  errors=$((errors + 1))
 fi
 
-# 2. Ruff lint
+# 2. Validate command frontmatter
 echo ""
-echo "[2/7] Ruff check..."
-run_ruff check sova/ tests/
-
-# 3. Ruff format
-echo ""
-echo "[3/7] Ruff format..."
-run_ruff format --check sova/ tests/
-
-# 4. Validate command frontmatter
-echo ""
-echo "[4/7] Command frontmatter..."
+echo "[2/5] Command frontmatter..."
 fm_errors=0
 for f in sova/commands/data/commands/*.md; do
   name=$(basename "$f")
@@ -99,11 +61,11 @@ else
   echo "  PASS"
 fi
 
-# 5. File permissions
+# 3. File permissions (the same set CI checks)
 echo ""
-echo "[5/7] File permissions..."
+echo "[3/5] File permissions..."
 perm_errors=0
-for f in invariants/*.sh; do
+for f in invariants/*.sh .github/scripts/*.sh; do
   if [ ! -x "$f" ]; then
     echo "  ERROR: $f is not executable"
     perm_errors=$((perm_errors + 1))
@@ -128,9 +90,9 @@ else
   echo "  SKIP (fetch failed; invariants will use the existing origin/main)"
 fi
 
-# 6. Invariant checks (mirrors CI invariants job)
+# 4. Invariant checks (mirrors CI invariants job)
 echo ""
-echo "[6/7] Invariants..."
+echo "[4/5] Invariants..."
 inv_errors=0
 for script in invariants/*.sh; do
   name=$(basename "$script" .sh)
@@ -148,10 +110,10 @@ else
   echo "  PASS"
 fi
 
-# 7. Secrets scan (gitleaks). SKIP when not installed so contributors without
+# 5. Secrets scan (gitleaks). SKIP when not installed so contributors without
 # the binary can still push; CI enforces it as a required check.
 echo ""
-echo "[7/7] Secrets scan (gitleaks)..."
+echo "[5/5] Secrets scan (gitleaks)..."
 if command -v gitleaks &>/dev/null; then
   # Scan git history (not the working tree) so gitignored real secrets
   # (.env, .claude/settings.local.json) are never read; the allowlist in

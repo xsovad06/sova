@@ -90,11 +90,15 @@ For Vertex AI support (Google Cloud ADC for LLM suggestions and batch processing
 pip install --user -e ".[vertex]"
 ```
 
-For development (tests, linting):
+For development (tests, linting), `make sync` installs exactly the versions CI tests (`uv.lock`; needs [uv](https://docs.astral.sh/uv/)), or install the newest versions in range:
 
 ```bash
 pip install --user -e ".[dev]"
 ```
+
+SQLite (`.claude/sova.db`) is the database backend CI tests. PostgreSQL (`SOVA_DATABASE_URL` with the `postgres` extra) is **experimental**: no CI job runs against it.
+
+`sova --version` reports the version derived from the nearest `vX.Y.Z` git tag (a build between tags carries a `.dev` suffix); release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick Start
 

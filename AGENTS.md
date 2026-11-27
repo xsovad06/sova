@@ -103,13 +103,13 @@ This project uses **GitHub Issues** with a project board.
 - **Code blocks**: always specify language (```bash, ```python, etc.)
 
 ### Dependencies
-- **After any `pyproject.toml` dependency edit, run `uv lock` and commit `uv.lock`**: CI installs the exact versions in that universal lock (`uv export --locked`, which fails on a stale lock); local installs still use pip.
+- **After any `pyproject.toml` dependency edit, run `uv lock` and commit `uv.lock`**: CI installs the exact versions in that universal lock (`uv export --locked`, which fails on a stale lock); `make sync` installs it locally.
 
 ### Testing
 - **All checks**: `make check` (lint + `make test-bash` + `make test-ci`, the same pytest invocation CI runs)
 - **Bash scripts**: `make lint-bash` + `make test-bash`; every script under `invariants/` and `.github/scripts/` must handle `--help` gracefully and stay executable (CI enforces both)
-- **Dashboard JS**: `make lint-js` (`node --check` per script and ES module); `node` is a dev requirement
-- **Python (local iteration)**: `make test-py` (deselects `runtime`/`stress`/`chaos`/`evaluation`; `PYTEST_WORKERS`, default 2)
+- **Dashboard JS**: `make lint-js` (`node --check` on scripts, ES modules, template scripts); `node` is a dev requirement
+- **Python (local iteration)**: `make test-py` (deselects `runtime`/`evaluation`; `PYTEST_WORKERS`, default 2)
 - **CI test invocation**: `make test-ci`, which does not deselect those markers, so a test carrying one gates itself with its own `skipif`; SOVA caps its `-n auto` per agent (`testing.check_workers`); CI fails a test over `SOVA_TEST_DURATION_BUDGET` unless `@pytest.mark.slow(reason=...)`
 - **Commands**: validate markdown structure (frontmatter, sections)
 - Real-money targets, CI matrix, coverage artifact: full entry: docs/testing-guidelines.md, "CI Matrix and Opt-in Targets"

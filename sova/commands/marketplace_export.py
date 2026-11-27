@@ -17,7 +17,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import tomllib
 from pathlib import Path
 
 from sova.commands.catalog import get_canonical_dir, parse_frontmatter
@@ -30,7 +29,9 @@ _PLUGIN_COMMANDS_DIR = _PLUGIN_DIR / "commands"
 _PLUGIN_JSON_PATH = _PLUGIN_DIR / ".claude-plugin" / "plugin.json"
 _MARKETPLACE_JSON_PATH = _REPO_ROOT / ".claude-plugin" / "marketplace.json"
 _MANIFEST_PATH = _PLUGIN_DIR / ".marketplace-manifest.json"
-_PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
+_CHANGELOG_PATH = _REPO_ROOT / "CHANGELOG.md"
+# A released section of CHANGELOG.md, as scripts/changelog.py writes it: "## 0.1.0 (2026-11-27)".
+_RELEASE_HEADING_RE = re.compile(r"^## (\d+\.\d+\.\d+) \(", re.MULTILINE)
 
 PLUGIN_NAME = "sova"
 PLUGIN_DESCRIPTION = (
@@ -225,10 +226,19 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def read_pyproject_version() -> str:
-    """Read `[project].version` from pyproject.toml, avoiding a hardcoded, drift-prone value."""
-    data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
-    return str(data["project"]["version"])
+def read_release_version() -> str:
+    """Return the newest released version in CHANGELOG.md, avoiding a hardcoded, drift-prone value.
+
+    pyproject.toml carries no version (setuptools-scm derives it from git tags, which a shallow
+    checkout lacks), so the plugin follows the committed CHANGELOG, whose newest section is the last
+    release (`make changelog RELEASE=X.Y.Z` adds one when a release is cut). Raises ValueError when
+    there is no released section rather than inventing a version.
+    """
+    text = _CHANGELOG_PATH.read_text(encoding="utf-8")
+    match = _RELEASE_HEADING_RE.search(text)
+    if match is None:
+        raise ValueError(f"{_CHANGELOG_PATH} has no released version: run `make changelog RELEASE=X.Y.Z`")
+    return match.group(1)
 
 
 # A bare cross-reference to one of this plugin's own bundled commands (the
@@ -348,7 +358,7 @@ def _sync_marketplace_json(plugin_json: dict[str, object]) -> None:
 
 def export() -> dict[str, str]:
     """Regenerate the marketplace package and return {relative_path: sha256} for the manifest."""
-    version = read_pyproject_version()
+    version = read_release_version()
     plugin_json = _build_plugin_json(version)
     _PLUGIN_JSON_PATH.write_text(json.dumps(plugin_json, indent=2) + "\n", encoding="utf-8")
     _sync_marketplace_json(plugin_json)

@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -54,16 +53,15 @@ class TestPluginManifest:
         assert re.match(r"^\d+\.\d+\.\d+$", data["version"])
         assert data["author"]["name"]
 
-    def test_plugin_json_version_matches_pyproject(self) -> None:
-        """plugin.json's version must be derived from pyproject.toml, not hand-set.
+    def test_plugin_json_version_matches_the_last_release(self) -> None:
+        """plugin.json's version must be derived from CHANGELOG.md's last release, not hand-set.
 
         Prevents the version drift called out in issue #324's review: a hardcoded
         "1.0.0" that never tracked the package's actual version.
         """
         path = _PLUGIN_DIR / ".claude-plugin" / "plugin.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        assert data["version"] == pyproject["project"]["version"]
+        assert data["version"] == marketplace_export.read_release_version()
 
     def test_owners_file_present(self) -> None:
         content = (_PLUGIN_DIR / "OWNERS").read_text(encoding="utf-8")
@@ -218,7 +216,7 @@ class TestExportEndToEnd:
         marketplace_json_path = repo_root / ".claude-plugin" / "marketplace.json"
         marketplace_json_path.parent.mkdir(parents=True)
         manifest_path = plugin_dir / ".marketplace-manifest.json"
-        pyproject_path = repo_root / "pyproject.toml"
+        changelog_path = repo_root / "CHANGELOG.md"
 
         for name in marketplace_export.SELECTED_COMMANDS:
             self._write_command(commands_dir / f"{name}.md")
@@ -238,7 +236,10 @@ class TestExportEndToEnd:
             ),
             encoding="utf-8",
         )
-        pyproject_path.write_text(f'[project]\nname = "sova"\nversion = "{version}"\n', encoding="utf-8")
+        changelog_path.write_text(
+            f"# Changelog\n\n## Unreleased\n\n- later\n\n## {version} (2026-11-27)\n\n## 0.1.0 (2026-01-01)\n",
+            encoding="utf-8",
+        )
 
         monkeypatch.setattr(marketplace_export, "_REPO_ROOT", repo_root)
         monkeypatch.setattr(marketplace_export, "_COMMANDS_DIR", commands_dir)
@@ -247,7 +248,7 @@ class TestExportEndToEnd:
         monkeypatch.setattr(marketplace_export, "_PLUGIN_JSON_PATH", plugin_json_path)
         monkeypatch.setattr(marketplace_export, "_MARKETPLACE_JSON_PATH", marketplace_json_path)
         monkeypatch.setattr(marketplace_export, "_MANIFEST_PATH", manifest_path)
-        monkeypatch.setattr(marketplace_export, "_PYPROJECT_PATH", pyproject_path)
+        monkeypatch.setattr(marketplace_export, "_CHANGELOG_PATH", changelog_path)
 
         return {
             "plugin_commands_dir": plugin_commands_dir,
@@ -263,7 +264,7 @@ class TestExportEndToEnd:
 
         hashes = marketplace_export.export()
 
-        assert marketplace_export.read_pyproject_version() == "9.9.9"
+        assert marketplace_export.read_release_version() == "9.9.9"
 
         plugin_json = json.loads(paths["plugin_json_path"].read_text(encoding="utf-8"))
         assert plugin_json["name"] == "sova"
@@ -282,6 +283,14 @@ class TestExportEndToEnd:
 
         for name in marketplace_export.SELECTED_COMMANDS:
             assert (paths["plugin_commands_dir"] / f"{name}.md").exists()
+
+    def test_export_refuses_a_changelog_with_no_release(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Before any release there is no version to publish, and inventing one would mislabel the plugin."""
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- x\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="no released version"):
+            marketplace_export.export()
 
     def test_export_deletes_obsolete_command_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         paths = self._isolate(tmp_path, monkeypatch)
