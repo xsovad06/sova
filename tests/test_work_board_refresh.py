@@ -1090,6 +1090,9 @@ class TestIssueChangeRefreshesTheBoardGraph:
                 await asyncio.gather(*work_item_service._graph_builds.values())
                 await asyncio.gather(*work_item_service._graph_notify_tasks)
                 ranked = await work_item_service.load_ranking_graph(tmp_path)
+                # The ranking above may start a background refresh: end it while the loader is still patched,
+                # or it would run after the patch and list issues through a real `gh`.
+                await work_item_service.cancel_graph_builds()
         finally:
             from sova.dashboard.routers import agents
 
@@ -1122,6 +1125,7 @@ class TestIssueChangeRefreshesTheBoardGraph:
             release.set()
             await asyncio.gather(*work_item_service._graph_builds.values(), *work_item_service._retired_graph_builds)
             ranked = await work_item_service.load_ranking_graph(tmp_path)
+            await work_item_service.cancel_graph_builds()  # a refresh the ranking started must not outlive the patch
 
         assert ranked.get_task(1).title == "new"
 
@@ -1275,6 +1279,8 @@ class TestColdBoardBuild:
         monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", lambda *_a, **_k: cfg)
         monkeypatch.setattr("sova.git.pr.run", run)
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+        # The queue source lists issues through the tracker adapter, which is not what this test counts.
+        monkeypatch.setattr("sova.adapters.github.GitHubAdapter.list_tasks", AsyncMock(return_value=[]))
         monkeypatch.setattr(work_board_service, "load_ranking_graph", AsyncMock(return_value=DependencyGraph([])))
         monkeypatch.setattr(work_board_service, "load_task_queue", AsyncMock(return_value=[]))
         monkeypatch.setattr(work_board_service, "load_hidden_issues", AsyncMock(return_value=[]))

@@ -35,6 +35,13 @@ from sova.llm.models import LLMResult
 from sova.llm.payload import TRUNCATION_MARKER
 
 
+@pytest.fixture(autouse=True)
+def _no_thread_lookup():
+    """The step's best-effort thread lookup would spawn gh; answer "lookup failed" (None) instead."""
+    with patch("sova.adapters.external_reviews.fetch_review_threads", new=AsyncMock(return_value=None)):
+        yield
+
+
 @pytest.fixture
 def mock_config() -> MagicMock:
     config = MagicMock()

@@ -6350,6 +6350,26 @@ class TestRegexPerformance:
 class TestReviewerLLMReview:
     """Tests for the full LLM-based ReviewerRole implementation."""
 
+    @pytest.fixture(autouse=True)
+    def _no_real_gh_lookups(self):
+        """Fail the PR branch and head-sha lookups without starting a real `gh` process.
+
+        A test that needs them to succeed patches them itself (the inner patch wins).
+        """
+        with (
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("gh unavailable in tests"),
+            ),
+            patch(
+                "sova.roles.reviewer.get_pr_head_sha",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("gh unavailable in tests"),
+            ),
+        ):
+            yield
+
     def _llm_response(self, findings: list[dict] | None = None, summary: str = "Looks good") -> str:
         import json
 
@@ -7261,6 +7281,26 @@ class TestReviewerParsing:
 
 class TestReviewerExceptionPaths:
     """Cover except-Exception branches in ReviewerRole methods."""
+
+    @pytest.fixture(autouse=True)
+    def _no_real_gh_lookups(self):
+        """Fail the PR branch and head-sha lookups without starting a real `gh` process.
+
+        A test that needs them to succeed patches them itself (the inner patch wins).
+        """
+        with (
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("gh unavailable in tests"),
+            ),
+            patch(
+                "sova.roles.reviewer.get_pr_head_sha",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("gh unavailable in tests"),
+            ),
+        ):
+            yield
 
     async def test_discover_pr_branch_exception_non_fatal(self, tmp_path: Path) -> None:
         """_discover_pr handles get_pr_branch_and_head_sha failure gracefully (lines 534-535)."""

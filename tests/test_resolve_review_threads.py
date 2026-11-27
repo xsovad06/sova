@@ -33,6 +33,13 @@ _HEAD = "892372e3512475e42638ffe7cab9a14d0734a2b5"
 _MOD = "sova.core.steps.resolve_review_threads"
 
 
+@pytest.fixture(autouse=True)
+def _no_gh_env_lookup():
+    """``_remote_tip`` resolves the gh identity (``gh auth token --user X``); answer None instead of spawning gh."""
+    with patch(f"{_MOD}.resolve_gh_env", new=AsyncMock(return_value=None)):
+        yield
+
+
 def _ctx(findings: list[dict], tmp_path: Path, *, threads: list[str] | None = None) -> ExecutionContext:
     adapter = AsyncMock()
     adapter.get_pr_reviews = AsyncMock(return_value=[])

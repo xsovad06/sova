@@ -26,6 +26,8 @@ from sova.git.pr import (
 )
 from sova.utils.shell import ShellResult
 
+pytestmark = pytest.mark.usefixtures("no_launch_gh")
+
 
 def _status(state: str) -> PRStatus:
     return PRStatus(number=7, state=state, mergeable="", review_decision="", url="", title="")
@@ -371,6 +373,26 @@ class TestBuildTaskItemClosedPrInReview:
     def test_no_pr_anywhere_stays_awaiting_review(self) -> None:
         item = _build_task_item(self._task(pr_number=None), None, None, None, open_pr_numbers={200})
         assert item["state"] == WorkItemState.PR_AWAITING_REVIEW
+
+    def test_an_unreadable_run_history_stays_awaiting_review(self) -> None:
+        task = {"issue": "42", "title": "t", "state": "in_review", "labels": [], "last_run": None, "runs_unknown": True}
+        assert _build_task_item(task, None, None, None)["state"] == WorkItemState.PR_AWAITING_REVIEW
+
+    def test_no_pr_and_no_run_needs_the_user_without_review_actions(self) -> None:
+        """#1425: an in-review label no PR or run ever backed must not read as Awaiting Review."""
+        task = {"issue": "42", "title": "t", "state": "in_review", "labels": [], "priority": 2, "last_run": None}
+        item = _build_task_item(task, None, None, None, open_pr_numbers={200})
+
+        assert item["state"] == WorkItemState.IN_REVIEW_NO_PR
+        assert item["state_label"] == "In Review, No PR"
+        assert item["primary_action"] is None
+        assert item["secondary_actions"] == []
+        assert "no PR exists" in item["matched_reason"]
+
+    def test_a_running_agent_without_a_run_record_is_not_reclassified(self) -> None:
+        task = {"issue": "42", "title": "t", "state": "in_review", "labels": [], "priority": 2, "last_run": None}
+        item = _build_task_item(task, None, {"role": "reviewer", "pid": 1}, None, open_pr_numbers={200})
+        assert item["state"] == WorkItemState.AGENT_RUNNING
 
     def test_spec_awaiting_approval_keeps_its_override_without_the_closed_pr_reason(self) -> None:
         task = self._task(pr_number=100, status="awaiting_approval", role="researcher")

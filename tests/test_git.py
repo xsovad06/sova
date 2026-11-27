@@ -3746,7 +3746,10 @@ diff --git a/foo.py b/foo.py
 
 class TestGetPrDiff:
     async def test_returns_diff(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with (
+            patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
+        ):
             mock_run.return_value = _shell_ok(stdout=SAMPLE_DIFF)
             result = await get_pr_diff(42, repo="user/repo", github_user="test")
 

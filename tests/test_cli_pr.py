@@ -245,6 +245,9 @@ class TestLinkedIssues:
         _pr_body(fake_gh, "Closes #12\n\nPart of #30")
         fake_gh.respond("pr", "view", "--jq", ".state", stdout="MERGED\n")
         fake_gh.respond("issue", "close", "12")
+        labels = [{"name": n} for n in ("agent:in-review", "sova:revise", "agent:ready", "sova:approved")]
+        fake_gh.respond("issue", "view", "12", "--json labels", stdout=json.dumps({"labels": labels}))
+        fake_gh.respond("api", "--method DELETE", "issues/12/labels/")
 
         result = _invoke("linked-issues", "10", "--apply", project=pr_project)
 
@@ -252,6 +255,12 @@ class TestLinkedIssues:
         assert result.stdout.splitlines() == ["issue #12 moved to done", "issue #30 left open (Part of): unchanged"]
         assert fake_gh.called_with("issue", "close", "12")
         assert not fake_gh.called_with("issue", "close", "30")
+        # #1425: the closed issue loses its workflow labels and keeps its suitability ones
+        assert fake_gh.called_with("issues/12/labels/agent%3Ain-review")
+        assert fake_gh.called_with("issues/12/labels/sova%3Arevise")
+        assert not fake_gh.called_with("agent%3Aready")
+        assert not fake_gh.called_with("sova%3Aapproved")
+        assert not fake_gh.called_with("issue", "view", "30")
 
     def test_apply_exits_1_when_an_issue_could_not_be_moved(self, pr_project: Path, fake_gh: FakeGh) -> None:
         _pr_body(fake_gh, "Closes #12")

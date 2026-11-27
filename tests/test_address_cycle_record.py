@@ -205,6 +205,12 @@ class TestThreadIdsForComments:
 
 
 class TestHydrationRecordsCommentId:
+    @pytest.fixture(autouse=True)
+    def _no_gh_env_lookup(self):
+        """Hydration resolves the gh identity (``gh auth token --user X``); answer {} instead of spawning gh."""
+        with patch("sova.utils.gh.resolve_gh_env", new=AsyncMock(return_value={})):
+            yield
+
     @pytest.mark.asyncio
     async def test_hydrated_finding_carries_the_inline_comment_id(self, tmp_path: Path) -> None:
         body = format_review_body(
@@ -236,6 +242,12 @@ class TestHydrationRecordsCommentId:
 
 
 class TestAddressReviewRecordsTheCycle:
+    @pytest.fixture(autouse=True)
+    def _no_thread_lookup(self):
+        """The step's best-effort thread lookup would spawn gh; answer "lookup failed" (None) instead."""
+        with patch("sova.core.steps.address_review._fetch_threads_best_effort", new=AsyncMock(return_value=None)):
+            yield
+
     @staticmethod
     def _patches(findings: list[dict], cr: tuple[list[dict], list[str]] = ([], [])):
         handoff = MagicMock()
@@ -728,6 +740,12 @@ class TestAddressedThreadIdsFromHandoffFindings:
 
 
 class TestAddressedThreadIds:
+    @pytest.fixture(autouse=True)
+    def _no_thread_lookup(self):
+        """The step's best-effort thread lookup would spawn gh; answer "lookup failed" (None) instead."""
+        with patch("sova.core.steps.address_review._fetch_threads_best_effort", new=AsyncMock(return_value=None)):
+            yield
+
     @pytest.mark.asyncio
     async def test_merges_and_dedupes_in_first_seen_order(self, tmp_path: Path) -> None:
         findings = [{"comment_id": 11}, {"comment_id": None}, {}]

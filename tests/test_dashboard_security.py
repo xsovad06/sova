@@ -409,6 +409,15 @@ def _proxied_headers(login: str | None = _LOGIN, **extra: str) -> dict[str, str]
     return headers
 
 
+def _stub_work_items_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the status socket's producer from rebuilding the work items, which lists issues through `gh`."""
+    from unittest.mock import AsyncMock
+
+    from sova.dashboard.routers import agents as agents_router
+
+    monkeypatch.setattr(agents_router, "_refresh_work_items_snapshot", AsyncMock())
+
+
 @pytest.fixture
 def proxied_app(tmp_path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     """A real dashboard app with one proxy origin and one allowed login."""
@@ -566,7 +575,10 @@ class TestProxyIdentityAccess:
             pass
         assert exc_info.value.code == 1008
 
-    def test_websocket_with_allowed_login_and_proxy_origin_connects(self, proxied_app: FastAPI) -> None:
+    def test_websocket_with_allowed_login_and_proxy_origin_connects(
+        self, proxied_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_work_items_refresh(monkeypatch)
         client = TestClient(proxied_app, base_url=_PROXY_ORIGIN)
         with client.websocket_connect("/api/ws/agents/status", headers=_proxied_headers(origin=_PROXY_ORIGIN)) as ws:
             assert ws.receive_json()["type"] == "status_update"
@@ -817,9 +829,12 @@ class TestNonLoopbackBind:
             pytest.param("other-secret", False, id="other-secret"),
         ],
     )
-    def test_websocket_follows_the_read_rule(self, lan_app: FastAPI, cookie: str | None, accepted: bool) -> None:
+    def test_websocket_follows_the_read_rule(
+        self, lan_app: FastAPI, cookie: str | None, accepted: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from starlette.websockets import WebSocketDisconnect
 
+        _stub_work_items_refresh(monkeypatch)
         client = TestClient(lan_app, base_url=_LAN_ORIGIN)
         if cookie is not None:
             value = {"signed": sign_csrf_token(_SECRET), "other-secret": sign_csrf_token("other-secret")}.get(cookie)

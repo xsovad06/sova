@@ -123,6 +123,7 @@ class TestSupervisorDaemon:
                 new_callable=AsyncMock,
                 return_value={"decisions": 0, "executed": 0},
             ),
+            patch.object(daemon, "_poll_epic_close", new_callable=AsyncMock, return_value={}),
         ):
             result = await daemon.poll_once()
             assert "progression" in result

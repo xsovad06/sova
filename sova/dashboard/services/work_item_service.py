@@ -654,6 +654,8 @@ def _build_task_item(
         external_reviews_enabled=external_reviews_enabled,
         max_address_cycles=max_address_cycles,
         closed_pr_number=closed_pr_number,
+        # A handoff is an agent's own record of a run; an unreadable run history proves nothing either way.
+        has_run=last_run is not None or handoff is not None or bool(task.get("runs_unknown")),
     )
     last_run_status = last_run.get("status") if last_run else None
     state, primary, secondary, spec_handoff_actions = _resolve_spec_review_override(
@@ -669,6 +671,8 @@ def _build_task_item(
     reason_chain = _reason_chain_payload(resolution, facts)
     if state is WorkItemState.PR_MERGED_ISSUE_OPEN:
         reason_chain = [f"PR #{closed_pr_number} is no longer open, but the issue is still labeled in review"]
+    elif state is WorkItemState.IN_REVIEW_NO_PR:
+        reason_chain = ["The issue is labeled in review, but no PR exists and SOVA has not run on it"]
     matched_reason = reason_chain[-1] if reason_chain else ""
     primary, secondary = _drop_integrate_while_bot_rereview(primary, secondary, facts)
     _attach_merge_blockers(primary, secondary, resolution, facts)

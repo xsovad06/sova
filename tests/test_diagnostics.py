@@ -1027,7 +1027,10 @@ async def test_a_raising_check_is_one_failed_row_and_the_rest_still_run(tmp_path
     """
     from sova.utils import diagnostics as mod
 
-    with patch.object(mod, "_check_install_completeness", side_effect=OSError("disk gone")):
+    with (
+        patch.object(mod, "_check_gh_cli", new_callable=AsyncMock, return_value=[]),
+        patch.object(mod, "_check_install_completeness", side_effect=OSError("disk gone")),
+    ):
         checks = await mod.run_all_checks(tmp_path)
 
     crashed = [c for c in checks if c.name == "install completeness"]
@@ -1044,7 +1047,10 @@ async def test_a_raising_check_does_not_swallow_cancellation(tmp_path: Path) -> 
     """CancelledError derives from BaseException and must keep propagating."""
     from sova.utils import diagnostics as mod
 
-    with patch.object(mod, "_check_rtk", side_effect=asyncio.CancelledError):
+    with (
+        patch.object(mod, "_check_gh_cli", new_callable=AsyncMock, return_value=[]),
+        patch.object(mod, "_check_rtk", side_effect=asyncio.CancelledError),
+    ):
         with pytest.raises(asyncio.CancelledError):
             await mod.run_all_checks(tmp_path)
 

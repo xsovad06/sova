@@ -253,6 +253,12 @@ class TestSyncStep:
 
 
 class TestAssessStep:
+    @pytest.fixture(autouse=True)
+    def _no_existing_pr(self):
+        """No existing PR for the issue, without a real `gh pr list` lookup (a test may patch it itself)."""
+        with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock, return_value=None):
+            yield
+
     async def test_researched_issue_passes(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
 
@@ -400,6 +406,12 @@ class TestAssessStepDivergence:
     """AssessStep must fail a doomed run in seconds when local HEAD has
     already diverged from origin/{branch}, instead of discovering the
     conflict at push time after a full develop cycle."""
+
+    @pytest.fixture(autouse=True)
+    def _no_existing_pr(self):
+        """No existing PR for the issue, without a real `gh pr list` lookup (a test may patch it itself)."""
+        with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock, return_value=None):
+            yield
 
     async def test_noop_when_branch_name_empty(self, tmp_path: Path) -> None:
         """A fresh developer run has no branch yet; the check must not run."""

@@ -26,7 +26,8 @@ from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 # Emits feed events, whose background write needs the shared DB and its teardown drain
 # (see ``tests/conftest.py:reset_db_rows``).
-pytestmark = pytest.mark.usefixtures("reset_db_rows")
+pytestmark = pytest.mark.usefixtures("reset_db_rows", "no_launch_gh")
+
 
 _DISCOVERY = {
     "layer": "llm",

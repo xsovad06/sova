@@ -6,7 +6,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -460,7 +460,10 @@ class TestDoctorWiring:
         from sova.utils import diagnostics as mod
 
         row = mod.DiagnosticCheck("commit.scopes", False, "x", False)
-        with patch.object(mod, "_check_commit_convention", return_value=[row]):
+        with (
+            patch.object(mod, "_check_gh_cli", new_callable=AsyncMock, return_value=[]),
+            patch.object(mod, "_check_commit_convention", return_value=[row]),
+        ):
             checks = asyncio.run(mod.run_all_checks(tmp_path))
         assert row in checks
 

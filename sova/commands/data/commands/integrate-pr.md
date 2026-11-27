@@ -918,11 +918,11 @@ sova linked-issues <PR_NUMBER> --apply
 
 It acts on each issue the body links and prints one line per issue:
 
-- **Closing keyword** (`Closes #N`, `Fixes #N`, `Resolves #N` or another GitHub form): the issue moves to `post_merge_state`. "done" (default) closes it; "on_qa" adds the `agent:on-qa` label and keeps it open; any other value leaves it as it is and is reported as not updated.
+- **Closing keyword** (`Closes #N`, `Fixes #N`, `Resolves #N` or another GitHub form): the issue moves to `post_merge_state`. "done" (default) closes it; "on_qa" adds the `agent:on-qa` label and keeps it open; any other value leaves it as it is and is reported as not updated. After "done" or "on_qa" the issue also loses `agent:in-review`, `agent:in-progress`, `sova:revise` and `sova:block`, whichever it carries.
 - **`Part of #N`** (a hand-written or older PR body): left alone, with no comment and no label change.
 - **A bare `#N`**: left alone.
 
-A non-zero exit means the PR body could not be read or an issue could not be updated. Report the output and carry on with the rest of this phase, but never close or relabel an issue by hand instead.
+A non-zero exit means the PR body could not be read, an issue could not be updated, or an issue kept a workflow label. Report the output and carry on with the rest of this phase, but never close or relabel an issue by hand instead.
 
 Then record which recorded rules the PR's review findings repeat (read by `sova retro report`). A failure is reported and never stops cleanup:
 

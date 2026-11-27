@@ -508,6 +508,8 @@ class TestAgentsAPI:
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=FakePRInfo()),
             patch("sova.git.operations.get_pr_status", new_callable=AsyncMock, return_value=FakePRStatus()),
             patch("sova.git.operations.get_ci_checks", new_callable=AsyncMock, return_value=[]),
+            patch("sova.git.operations.get_pr_head_sha", new_callable=AsyncMock, return_value=""),
+            patch("sova.git.pr.get_pr_review_data", new_callable=AsyncMock, return_value={}),
         ):
             resp = await client.get("/api/agents/issue/42/pr-status")
 

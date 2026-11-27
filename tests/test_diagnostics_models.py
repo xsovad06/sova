@@ -397,7 +397,10 @@ class TestConfiguredModels:
         assert second["model: llm.model"].passed
 
     async def test_guard_registration(self, tmp_path: Path) -> None:
-        with patch.object(diagnostics, "_check_configured_models", side_effect=RuntimeError("broken")) as check:
+        with (
+            patch.object(diagnostics, "_check_gh_cli", new_callable=AsyncMock, return_value=[]),
+            patch.object(diagnostics, "_check_configured_models", side_effect=RuntimeError("broken")) as check,
+        ):
             rows = await diagnostics.run_all_checks(tmp_path)
         check.assert_called_once_with(tmp_path)
         row = next(row for row in rows if row.name == "configured models")

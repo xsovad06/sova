@@ -141,7 +141,8 @@ async def get_priority_queue(
         return []
 
     queued = {t.id for t in actionable}
-    last_runs = {issue: run for issue, run in (await _get_last_runs_by_issue(project_dir)).items() if issue in queued}
+    fetched_runs = await _get_last_runs_by_issue(project_dir)
+    last_runs = {issue: run for issue, run in (fetched_runs or {}).items() if issue in queued}
     await _drop_closed_pr_numbers(last_runs, project_dir, open_prs, cfg)
 
     queue = []
@@ -166,6 +167,8 @@ async def get_priority_queue(
                 "labels": list(t.labels),
                 "url": t.url,
                 "last_run": last_runs.get(t.id),
+                # The run history could not be read, so a None last_run says nothing about whether SOVA ran.
+                "runs_unknown": fetched_runs is None,
                 "created_at": t.metadata.get("created_at", ""),
                 "assignees": list(t.assignees),
                 "issue_type": t.issue_type,
@@ -299,8 +302,8 @@ async def _enrich_spec_status(queue: list[dict], project_dir: Path | None) -> No
     await asyncio.to_thread(_enrich_sync)
 
 
-async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
-    """Get the most recent TaskRun for each issue number.
+async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict] | None:
+    """Get the most recent TaskRun for each issue number, or None when the run history cannot be read.
 
     Uses a subquery to find max(id) per issue, avoiding loading all rows.
     Also collects the PR numbers of ALL the issue's runs (reviewer runs often lack it) as
@@ -343,7 +346,7 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
         return last_runs
     except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("Failed to fetch last runs for queue enrichment", exc_info=True)
-        return {}
+        return None
 
 
 _MAX_PR_CANDIDATES_PER_ISSUE = 3  # bounds the direct lookups a queue poll can make for an issue's PR history

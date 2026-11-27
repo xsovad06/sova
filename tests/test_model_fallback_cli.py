@@ -6,6 +6,9 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from sova.adapters.base import Task
 from sova.llm.client import invoke, invoke_command
 from sova.llm.models import LLMResult
 from sova.llm.provider import LLMProvider
@@ -74,6 +77,13 @@ class TestFallbackModelPassthrough:
 
 class TestStepInvokesFallback:
     """Test that steps compute and pass the appropriate fallback model."""
+
+    @pytest.fixture(autouse=True)
+    def _fake_task_fetch(self):
+        """Answer the develop step's task fetch without a real `gh issue view`."""
+        task = Task(id="123", title="Test issue")
+        with patch("sova.adapters.github.GitHubAdapter.get_task", new_callable=AsyncMock, return_value=task):
+            yield
 
     async def test_step_passes_next_fallback_to_invoke_command(self, tmp_path: Path) -> None:
         """Steps should pass fallback_models[fallback_model_index] as fallback_model parameter."""

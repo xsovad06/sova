@@ -22,6 +22,7 @@ from sova.db.session import get_session
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
+@pytest.mark.usefixtures("no_tracker_rollback")
 class TestControlServiceRecovery:
     async def test_recover_stale_runs_marks_dead_processes(self) -> None:
         """Runs with dead PIDs should be marked as interrupted."""
@@ -141,6 +142,7 @@ class TestControlServiceRecovery:
             assert "pending" in updated.error_message
 
 
+@pytest.mark.usefixtures("no_tracker_rollback")
 class TestRecoveryMergeCheck:
     async def test_recover_merge_role_checks_pr_merged(self) -> None:
         """Merge-role runs should be marked 'done' if PR was actually merged."""
@@ -486,6 +488,7 @@ class TestTerminalZombieRecovery:
             assert (await check.get(TaskRun, run_id)).status == "running"
 
 
+@pytest.mark.usefixtures("no_tracker_rollback")
 class TestOrphanAdoption:
     """A live, identity-matched orphan is adopted, never signalled, unless recovery.kill_orphans is on."""
 

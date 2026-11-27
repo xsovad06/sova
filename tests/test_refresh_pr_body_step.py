@@ -300,9 +300,10 @@ class TestRefreshPrBodyStepGitFailure:
 
 
 class TestRefreshPrBodyStepFailures:
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock, return_value="## Summary\n- old")
     @patch("sova.core.steps.refresh_pr_body.invoke")
     @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_llm_failure_is_non_fatal(self, mock_run, mock_invoke, tmp_path: Path) -> None:
+    async def test_llm_failure_is_non_fatal(self, mock_run, mock_invoke, _mock_get_body, tmp_path: Path) -> None:
         mock_run.side_effect = _git_results()
         mock_invoke.side_effect = RuntimeError("LLM timeout")
 
@@ -312,9 +313,12 @@ class TestRefreshPrBodyStepFailures:
         assert result.success
         assert "skipped" in result.summary
 
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock, return_value="## Summary\n- old")
     @patch("sova.core.steps.refresh_pr_body.invoke")
     @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_llm_non_runtime_error_is_also_non_fatal(self, mock_run, mock_invoke, tmp_path: Path) -> None:
+    async def test_llm_non_runtime_error_is_also_non_fatal(
+        self, mock_run, mock_invoke, _mock_get_body, tmp_path: Path
+    ) -> None:
         """invoke() routes through guard_prompt(), which can raise
         PromptInjectionError (a plain Exception, not a RuntimeError); this
         step's own contract is that a failure here must never abort the

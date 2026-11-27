@@ -443,6 +443,8 @@ def _reason_for_needs(state: str) -> tuple[str, str]:
         return "spec", "Spec awaiting approval"
     if state == WorkItemState.PR_MERGED_ISSUE_OPEN:
         return "stale_label", "PR no longer open, issue still labeled in review"
+    if state == WorkItemState.IN_REVIEW_NO_PR:
+        return "stale_label", "Labeled in review, but no PR exists"
     return "failed_run", "Last run failed"
 
 

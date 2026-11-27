@@ -47,6 +47,7 @@ def test_every_input_gets_exactly_one_stage(state: str) -> None:
         ({"state": "spec_review", "mode": "autonomous"}, "needs"),
         ({"state": "pr_review_exhausted"}, "needs"),
         ({"state": "pr_merged_issue_open", "mode": "autonomous", "queued": True}, "needs"),
+        ({"state": "in_review_no_pr", "mode": "autonomous", "queued": True}, "needs"),
         ({"state": "triaged", "mode": "autonomous", "run_status": "failed", "queued": True}, "needs"),
         ({"state": "triaged", "mode": "unclassified", "run_status": "failed"}, "needs"),
         # a later successful run replaces the latest run, so it is no failure

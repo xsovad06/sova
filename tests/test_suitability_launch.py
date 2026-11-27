@@ -33,6 +33,8 @@ from sova.dashboard.services.control_service import ProjectAgents, start_agent
 from sova.supervisor.dependency_graph import DependencyGraph
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
+pytestmark = pytest.mark.usefixtures("no_pr_head_gh")
+
 _BLOCKED = {
     "code": "suitability_blocked",
     "error": "Issue #7 is classified epic (label: type: epic) and is not meant for an agent.",

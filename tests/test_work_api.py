@@ -5,6 +5,7 @@ Split from tests/test_dashboard.py; see docs/testing-guidelines.md, "Test File L
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -66,6 +67,13 @@ class TestQueueServicePrLookup:
 
         result = await _get_last_runs_by_issue(None)
         assert result["50"]["pr_number"] is None
+
+    async def test_unreadable_run_history_is_none_not_empty(self) -> None:
+        """No runs and could-not-read differ: the board marks an in-review issue with no run as having no PR."""
+        from sova.dashboard.services.queue_service import _get_last_runs_by_issue
+
+        with patch("sova.dashboard.services.queue_service.get_session", side_effect=OSError("db gone")):
+            assert await _get_last_runs_by_issue(None) is None
 
 
 class TestQueueServiceEnrichment:
@@ -984,6 +992,19 @@ class TestWorkItemAwaitingApprovalFallback:
 class TestComplexityEndpoint:
     """Tests for GET /api/agents/issue/{issue}/complexity."""
 
+    @pytest.fixture(autouse=True)
+    def _no_gh_task_fetch(self) -> Iterator[None]:
+        """Answer the launch modal's tracker fetch with no issue instead of a real `gh issue view`.
+
+        Tests that need a task patch ``sova.adapters.create_adapter`` themselves, which takes precedence.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        adapter = AsyncMock()
+        adapter.get_task = AsyncMock(return_value=None)
+        with patch("sova.adapters.create_adapter", return_value=adapter):
+            yield
+
     async def test_complexity_from_db_assessment(self, client: AsyncClient, session: AsyncSession) -> None:
         from sova.db.models import TaskAssessmentRecord
 
@@ -1232,6 +1253,10 @@ class TestWorkItemReasonChainPayload:
         assert "not ready" not in item["matched_reason"]
 
     def test_label_only_item_has_empty_chain_and_reason(self) -> None:
-        item = self._build(pr_data=None, running=None, handoff=None)
+        from sova.dashboard.services.work_item_service import _build_task_item
+
+        # A run with no PR: a label-only in-review item with no run at all is IN_REVIEW_NO_PR, which explains itself.
+        task = {**self._task(), "last_run": {"id": 1, "status": "done", "role": "developer"}}
+        item = _build_task_item(task, pr_data=None, running=None, handoff=None)
         assert item["reason_chain"] == []
         assert item["matched_reason"] == ""

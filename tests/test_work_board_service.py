@@ -1122,8 +1122,9 @@ class TestEntryDetails:
     def test_an_exhausted_review_budget_needs_the_user(self) -> None:
         assert board._reason_for_needs("pr_review_exhausted") == ("review_budget", "Review budget exhausted")
 
-    def test_a_stale_in_review_label_needs_the_user(self) -> None:
-        assert board._reason_for_needs("pr_merged_issue_open")[0] == "stale_label"
+    @pytest.mark.parametrize("state", ["pr_merged_issue_open", "in_review_no_pr"])
+    def test_a_stale_in_review_label_needs_the_user(self, state: str) -> None:
+        assert board._reason_for_needs(state)[0] == "stale_label"
 
     def test_a_human_only_state_is_yours_even_with_an_autonomous_mode(self) -> None:
         item = _item(1, "human_only", mode="autonomous")

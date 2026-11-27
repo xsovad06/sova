@@ -225,12 +225,23 @@ class TestLinkedIssuesCli:
         assert result.exit_code == 0
         assert "closes no issue" in result.stdout
 
-    def test_apply_exits_non_zero_when_an_issue_was_not_updated(self) -> None:
-        handle = AsyncMock(return_value=MergedIssues(transitioned=["1"], failed=["2"]))
+    @pytest.mark.parametrize(
+        ("outcome", "line"),
+        [
+            (MergedIssues(transitioned=["1"], failed=["2"]), "issue #2 not updated (see log)"),
+            (
+                MergedIssues(transitioned=["1"], labels_left={"1": ("sova:block",)}),
+                "issue #1 still labeled sova:block: remove by hand",
+            ),
+        ],
+        ids=["not-moved", "labels-left"],
+    )
+    def test_apply_exits_non_zero_when_an_issue_was_not_updated(self, outcome: MergedIssues, line: str) -> None:
+        handle = AsyncMock(return_value=outcome)
         result = _run_with(_patched(handle_merged_pr_issues=handle), "884", "--apply")
 
         assert result.exit_code == 1
-        assert "issue #2 not updated (see log)" in result.stdout
+        assert line in result.stdout
 
     def test_apply_exits_non_zero_when_the_body_is_unreadable(self) -> None:
         handle = AsyncMock(return_value=None)
@@ -419,11 +430,12 @@ class TestCommandsCloseOnlyOnClosingKeywords:
         assert "gh issue close" not in text
 
     @pytest.mark.parametrize("path", ["sova/commands/data/commands/after-merge.md", ".claude/commands/after-merge.md"])
-    def test_after_merge_reports_a_failed_label_edit(self, path: str) -> None:
-        """#1266: a failed label edit is named, never discarded by `2>/dev/null || true`."""
+    def test_after_merge_leaves_label_removal_to_the_cli(self, path: str) -> None:
+        """#1425: `sova linked-issues --apply` is the one place that clears workflow labels after a merge."""
         text = _read(path)
+        assert "--remove-label" not in text
+        assert "gh issue edit" not in text
         assert "2>/dev/null || true" not in text
-        assert "FAILED: could not remove the workflow labels" in text
 
     @pytest.mark.parametrize(
         "path",

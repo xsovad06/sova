@@ -55,22 +55,7 @@ Each shell block below runs as its own shell invocation, so each one assigns eve
    ```bash
    sova linked-issues <PR_NUMBER> --apply
    ```
-   Each issue a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms) moves to `integration.post_merge_state` ("done" closes it). A `Part of #N` or bare `#N` issue is left alone, with no comment and no label change. Never close an issue by hand instead. A non-zero exit means an issue was not updated, so name each such issue from the output in the final report and carry on. On a Jira project, move the ticket the PR title names through its workflow instead.
-
-   Then, for each issue the command moved (a closing reference, not a `Part of` or bare one), remove the workflow labels that no longer apply after the merge. Only the labels the issue carries are passed, since `gh` errors on a label the repository never created (for example `sova:block`); name any failure in the final report instead of discarding it:
-   ```bash
-   if ! LABELS=$(gh issue view <ISSUE_NUMBER> --json labels --jq '.labels[].name'); then
-     echo "FAILED: could not read the labels of #<ISSUE_NUMBER>" >&2
-   else
-     ARGS=()
-     for label in agent:in-review agent:in-progress sova:revise sova:block; do
-       if printf '%s\n' "$LABELS" | grep -qxF "$label"; then ARGS+=(--remove-label "$label"); fi
-     done
-     if [ "${#ARGS[@]}" -gt 0 ] && ! gh issue edit <ISSUE_NUMBER> "${ARGS[@]}"; then
-       echo "FAILED: could not remove the workflow labels of #<ISSUE_NUMBER>" >&2
-     fi
-   fi
-   ```
+   Each issue a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms) moves to `integration.post_merge_state` ("done" closes it) and, once moved to "done" or "on_qa", loses the workflow labels that no longer apply (`agent:in-review`, `agent:in-progress`, `sova:revise`, `sova:block`). A `Part of #N` or bare `#N` issue is left alone, with no comment and no label change. Never close or relabel an issue by hand instead. A non-zero exit means an issue was not updated or kept a workflow label, so name each such issue from the output in the final report and carry on. On a Jira project, move the ticket the PR title names through its workflow instead.
 
    On a GitHub project, also record which recorded rules the PR's review findings repeat (read by `sova retro report`). A non-zero exit means nothing was recorded: name it in the final report and carry on:
    ```bash

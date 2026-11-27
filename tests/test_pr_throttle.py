@@ -1613,6 +1613,7 @@ class TestAgentDBDequeueOnFailure:
         assert result is False
 
 
+@pytest.mark.usefixtures("no_tracker_rollback")
 class TestFinalizeCancelsPendingEntryOfEndedRun:
     """The run-finalization backstop: an ended run leaves no pending entry, whoever set its status."""
 
@@ -2308,6 +2309,15 @@ def _project_cfg(*, enabled: bool, repo: str = "o/r") -> ProjectConfig:
 
 
 class TestEnsurePRThrottleLoop:
+    @pytest.fixture(autouse=True)
+    def _no_star_count_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A started loop reads the repo's star count through ``gh``; answer "unknown" instead (#1425)."""
+
+        async def _unknown_stars(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr("sova.supervisor.coderabbit_quota._fetch_star_count", _unknown_stars)
+
     async def test_starts_a_loop_and_registers_it(self, tmp_path: Path, clean_throttle_registry: ModuleType) -> None:
         app_module = clean_throttle_registry
         started = await app_module.ensure_pr_throttle_loop(tmp_path, _project_cfg(enabled=True))

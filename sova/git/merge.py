@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from sova.adapters.base import TaskState
 from sova.config.models import IntegrationConfig
@@ -529,13 +530,29 @@ async def _move_to_post_merge_state(
     return False
 
 
+# Workflow labels that no longer apply once a merged PR has finished an issue. Suitability and hold labels
+# (agent:ready, agent:on-hold, sova:approved) are a person's call and stay; agent:on-qa is the on_qa state itself.
+_MERGED_STRIP_LABELS = ("agent:in-review", "agent:in-progress", "sova:revise", "sova:block")
+# The post-merge states that finish an issue; any other leaves it open and in play, so its labels stay.
+_STRIP_AFTER_STATES = frozenset({TaskState.DONE.value, TaskState.ON_QA.value})
+
+
 @dataclass
 class MergedIssues:
-    """What :func:`handle_merged_pr_issues` did to each issue a merged PR body closes."""
+    """What :func:`handle_merged_pr_issues` did to each issue a merged PR body closes.
+
+    ``labels_left`` maps a moved issue whose workflow labels were not all removed to the labels still on it,
+    or to None when its labels could not be read. Either is a failure (:attr:`has_failures`).
+    """
 
     transitioned: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     part_of: list[str] = field(default_factory=list)
+    labels_left: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+
+    @property
+    def has_failures(self) -> bool:
+        return bool(self.failed or self.labels_left)
 
     def describe(self, post_merge_state: str) -> list[str]:
         # A "Part of" issue is a deliberate skip, not a failure: it is listed so the operator can tell
@@ -543,8 +560,43 @@ class MergedIssues:
         return (
             [f"issue #{n} moved to {post_merge_state}" for n in self.transitioned]
             + [f"issue #{n} not updated (see log)" for n in self.failed]
+            + [_describe_labels_left(n, left) for n, left in self.labels_left.items()]
             + [f"issue #{n} left open (Part of): unchanged" for n in self.part_of]
         )
+
+
+def _describe_labels_left(issue: str, left: tuple[str, ...] | None) -> str:
+    if left is None:
+        return f"issue #{issue} labels unreadable: workflow labels may remain, remove them by hand"
+    return f"issue #{issue} still labeled {', '.join(left)}: remove by hand"
+
+
+async def _strip_workflow_labels(issue: str, *, repo: str, env: dict[str, str] | None) -> tuple[str, ...] | None:
+    """Remove the :data:`_MERGED_STRIP_LABELS` the issue carries. Returns the ones left, or None if unreadable.
+
+    Only carried labels are removed, so a repository that never created one (``sova:block``) is no error, and a
+    label already gone by the time of the delete (404) counts as removed.
+    """
+    view = await run("gh", "issue", "view", issue, "--repo", repo, "--json", "labels", env=env)
+    if not view.success:
+        log.warning("git.merge.labels_unreadable", issue=issue, stderr=view.stderr[:200])
+        return None
+    try:
+        carried = {label["name"] for label in json.loads(view.stdout).get("labels", [])}
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
+        log.warning("git.merge.labels_unparseable", issue=issue)
+        return None
+    left: list[str] = []
+    for label in _MERGED_STRIP_LABELS:
+        if label not in carried:
+            continue
+        result = await run(
+            "gh", "api", "--method", "DELETE", f"repos/{repo}/issues/{issue}/labels/{quote(label, safe='')}", env=env
+        )
+        if not result.success and "http 404" not in result.stderr.lower():
+            log.warning("git.merge.label_remove_failed", issue=issue, label=label, stderr=result.stderr[:200])
+            left.append(label)
+    return tuple(left)
 
 
 async def read_pr_body(pr_number: int, *, repo: str, env: dict[str, str] | None) -> str | None:
@@ -582,6 +634,10 @@ async def handle_merged_pr_issues(
     bare ``#N`` are left untouched, with no comment and no label change. Which issue the caller
     associates with the PR plays no part (#1340). Returns None when the PR body cannot be read, so
     "could not tell" never reads as "nothing linked".
+
+    A closing issue moved to ``done`` or ``on_qa`` also loses the :data:`_MERGED_STRIP_LABELS` it carries,
+    whether the adapter or the ``gh`` fallback moved it. A removal that fails is listed in ``labels_left``;
+    the close itself stands (#1425).
     """
     env = await resolve_gh_env(github_user)
     links = await read_issue_links(pr_number, repo=repo, env=env)
@@ -602,12 +658,21 @@ async def handle_merged_pr_issues(
             log.warning("git.merge.post_merge_state_failed", issue=issue, pr=pr_number, exc_info=True)
             moved = False
         (outcome.transitioned if moved else outcome.failed).append(issue)
+        if moved and post_merge_state in _STRIP_AFTER_STATES:
+            try:
+                left = await _strip_workflow_labels(issue, repo=repo, env=env)
+            except Exception:  # noqa: BLE001 (the issue is already moved; a label failure must not abort the rest)
+                log.warning("git.merge.label_strip_failed", issue=issue, pr=pr_number, exc_info=True)
+                left = None
+            if left is None or left:
+                outcome.labels_left[issue] = left
     log.info(
         "git.merge.merged_pr_issues_handled",
         pr=pr_number,
         transitioned=outcome.transitioned,
         part_of_ignored=outcome.part_of,
         failed=outcome.failed,
+        labels_left=outcome.labels_left,
     )
     return outcome
 

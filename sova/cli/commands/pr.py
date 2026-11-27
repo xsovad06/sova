@@ -469,7 +469,7 @@ async def _linked_issues(*, pr: int, apply: bool, mark_in_review: bool, project_
         raise typer.Exit(code=1)
     for line in merged.describe(post_merge_state) or [f"PR #{pr} closes no issue: no issue updated."]:
         typer.echo(line)
-    if merged.failed:
+    if merged.has_failures:
         raise typer.Exit(code=1)
 
 

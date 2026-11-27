@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -553,6 +554,14 @@ class TestGetAvailableActions:
 
 
 class TestGetResourceSnapshot:
+    @pytest.fixture(autouse=True)
+    def _no_gh_billing_call(self) -> Iterator[None]:
+        """Keep the CI budget lookup off the real `gh api` billing endpoints."""
+        tracker = MagicMock()
+        tracker.get_budget = AsyncMock(return_value=MagicMock(used=100, total=2000, pct_used=5.0, remaining=1900))
+        with patch("sova.supervisor.ci_budget.get_ci_budget_tracker", return_value=tracker):
+            yield
+
     async def test_happy_path(self, planner: SupervisorPlanner) -> None:
         mock_status = MagicMock(is_limited=False, hits_in_window=5, cooldown_remaining_seconds=0.0)
         mock_tracker = MagicMock()

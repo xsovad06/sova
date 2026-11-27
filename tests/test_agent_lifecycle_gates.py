@@ -20,7 +20,7 @@ from tests.conftest import csrf_request_headers as _csrf_request_headers
 # background task touching the DB when its event loop closes (the real
 # ``start_agent()`` calls in ``TestDuplicateAgentPrevention``) can invalidate the
 # shared connection; the next test's sweep recreates the schema.
-pytestmark = pytest.mark.usefixtures("reset_db_rows")
+pytestmark = pytest.mark.usefixtures("reset_db_rows", "no_launch_gh")
 
 
 # ---------------------------------------------------------------------------

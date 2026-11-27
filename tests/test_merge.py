@@ -648,11 +648,14 @@ def _fake_gh(
     *,
     failing: tuple[str, ...] = (),
     not_json: tuple[str, ...] = (),
+    labels: dict[str, list[str]] | None = None,
+    delete_errors: dict[str, str] | None = None,
 ) -> tuple[_FakeRun, list[tuple[str, ...]]]:
     """A stand-in for sova.git.merge.run that answers the gh calls handle_merged_pr_issues makes.
 
-    *failing* names the calls that fail, as "pr view" or "issue close <n>". *not_json* names the view calls
-    ("pr view") that succeed but print something that is not JSON.
+    *failing* names the calls that fail, as "pr view", "issue close <n>" or "issue view <n>". *not_json* names
+    the view calls ("pr view") that succeed but print something that is not JSON. *labels* gives each issue's
+    labels (none when absent), and *delete_errors* the stderr of a label removal that fails, by label name.
     """
     calls: list[tuple[str, ...]] = []
 
@@ -665,9 +668,24 @@ def _fake_gh(
             return _shell_ok("not json")
         if args[1:3] == ("pr", "view"):
             return _shell_ok(json.dumps({"body": pr_body}))
+        if args[1:3] == ("issue", "view"):
+            names = (labels or {}).get(args[3], [])
+            return _shell_ok(json.dumps({"labels": [{"name": n} for n in names]}))
+        if args[1] == "api" and args[-1].split("/labels/")[-1] in (delete_errors or {}):
+            return _shell_fail(stderr=(delete_errors or {})[args[-1].split("/labels/")[-1]])
         return _shell_ok()
 
     return fake_run, calls
+
+
+def _removed_labels(calls: list[tuple[str, ...]]) -> list[tuple[str, str]]:
+    """(issue, label) for each label removal the fake saw, in call order."""
+    removed = []
+    for call in calls:
+        if call[1] == "api" and "DELETE" in call:
+            path = call[-1].split("/")
+            removed.append((path[-3], path[-1].replace("%3A", ":")))
+    return removed
 
 
 async def _handle(fake_run: _FakeRun, *, post_merge_state: str = "done") -> MergedIssues | None:
@@ -744,12 +762,88 @@ class TestHandleMergedPrIssues:
         assert outcome == MergedIssues(transitioned=["2"], failed=["1"])
 
     def test_describe_lists_every_outcome(self) -> None:
-        outcome = MergedIssues(transitioned=["1"], failed=["3"], part_of=["7"])
+        outcome = MergedIssues(
+            transitioned=["1", "2", "4"], failed=["3"], part_of=["7"], labels_left={"2": ("sova:block",), "4": None}
+        )
         assert outcome.describe("done") == [
             "issue #1 moved to done",
+            "issue #2 moved to done",
+            "issue #4 moved to done",
             "issue #3 not updated (see log)",
+            "issue #2 still labeled sova:block: remove by hand",
+            "issue #4 labels unreadable: workflow labels may remain, remove them by hand",
             "issue #7 left open (Part of): unchanged",
         ]
+        assert outcome.has_failures
+
+
+_CARRIED = ["agent:in-review", "agent:in-progress", "sova:revise", "sova:block", "agent:ready", "sova:approved"]
+_WORKFLOW = ["agent:in-review", "agent:in-progress", "sova:revise", "sova:block"]
+
+
+class TestMergedIssueLabelCleanup:
+    """A closing issue moved to done or on_qa loses its workflow labels (#1425); nothing else is touched."""
+
+    @pytest.mark.parametrize("post_merge_state", ["done", "on_qa"])
+    @pytest.mark.parametrize("via_adapter", [False, True], ids=["gh-fallback", "adapter"])
+    async def test_workflow_labels_are_removed(self, post_merge_state: str, via_adapter: bool) -> None:
+        fake_run, calls = _fake_gh("Closes #5", labels={"5": [*_CARRIED, "agent:on-qa"]})
+        with (
+            patch("sova.git.merge.run", new=fake_run),
+            patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
+        ):
+            outcome = await handle_merged_pr_issues(
+                884, post_merge_state=post_merge_state, repo="o/r", adapter=AsyncMock() if via_adapter else None
+            )
+
+        assert outcome == MergedIssues(transitioned=["5"])
+        assert not outcome.has_failures
+        assert _removed_labels(calls) == [("5", label) for label in _WORKFLOW]
+
+    async def test_only_carried_labels_are_removed(self) -> None:
+        """A repo that never created sova:block must not error on it."""
+        fake_run, calls = _fake_gh("Closes #5", labels={"5": ["agent:in-review", "agent:ready"]})
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues(transitioned=["5"])
+        assert _removed_labels(calls) == [("5", "agent:in-review")]
+
+    async def test_an_issue_with_no_workflow_label_is_a_no_op(self) -> None:
+        fake_run, calls = _fake_gh("Closes #5", labels={"5": ["agent:on-hold"]})
+
+        assert await _handle(fake_run) == MergedIssues(transitioned=["5"])
+        assert _removed_labels(calls) == []
+
+    async def test_a_partial_removal_reports_the_labels_left(self) -> None:
+        fake_run, calls = _fake_gh(
+            "Closes #5",
+            labels={"5": ["agent:in-review", "sova:revise"]},
+            delete_errors={"sova%3Arevise": "HTTP 502: Bad Gateway"},
+        )
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues(transitioned=["5"], labels_left={"5": ("sova:revise",)})
+        assert outcome.has_failures
+        assert ("gh", "issue", "close", "5", "--repo", "o/r") in calls
+
+    async def test_a_label_already_gone_counts_as_removed(self) -> None:
+        """Another path (or a person) removing the label first is not a failure."""
+        fake_run, _ = _fake_gh(
+            "Closes #5", labels={"5": ["sova:revise"]}, delete_errors={"sova%3Arevise": "HTTP 404: Not Found"}
+        )
+
+        assert await _handle(fake_run) == MergedIssues(transitioned=["5"])
+
+    async def test_unreadable_labels_are_a_failure(self) -> None:
+        fake_run, _ = _fake_gh("Closes #5", failing=("issue view 5",))
+
+        assert await _handle(fake_run) == MergedIssues(transitioned=["5"], labels_left={"5": None})
+
+    async def test_an_issue_that_was_not_moved_keeps_its_labels(self) -> None:
+        fake_run, calls = _fake_gh("Closes #5", failing=("issue close 5",), labels={"5": _WORKFLOW})
+
+        assert await _handle(fake_run) == MergedIssues(failed=["5"])
+        assert not any(call[1:3] == ("issue", "view") for call in calls)
 
     def test_part_of_only_is_described_so_it_reads_as_deliberate(self) -> None:
         assert MergedIssues(part_of=["7"]).describe("done") == ["issue #7 left open (Part of): unchanged"]

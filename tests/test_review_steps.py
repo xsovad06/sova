@@ -19,6 +19,22 @@ from tests.core_helpers import _make_ctx
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
+@pytest.fixture(autouse=True)
+def _no_gh_lookups():
+    """Answer the gh identity and review-thread lookups without spawning gh.
+
+    ``get_active_gh_user`` (``gh auth status``) reads as no account, ``resolve_gh_env`` (``gh auth token``)
+    as the ambient env, and the step's best-effort thread lookup as "lookup failed" (None). A test that
+    exercises one of them patches it again inside its own ``with`` block.
+    """
+    with (
+        patch("sova.utils.gh.get_active_gh_user", new=AsyncMock(return_value=None)),
+        patch("sova.utils.gh.resolve_gh_env", new=AsyncMock(return_value={})),
+        patch("sova.core.steps.address_review._fetch_threads_best_effort", new=AsyncMock(return_value=None)),
+    ):
+        yield
+
+
 class TestAddressReviewStep:
     async def test_no_findings_returns_success(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep

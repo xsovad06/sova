@@ -242,6 +242,116 @@ def _reset_project_scoped_backends() -> Iterator[None]:
     set_server_project_dir(None)
 
 
+# The real gh found on PATH when the session starts. A test may put a stub named gh first on a child's PATH;
+# only a gh that resolves here (or to nothing, as on a machine without gh) is the real one.
+_REAL_GH = shutil.which("gh")
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+# gh at a command position of a shell script: its start, after ; & | ( ` $( or a newline, after any VAR=value.
+_GH_IN_SCRIPT = re.compile(r"(?:^|[;&|(`\n]|\$\()\s*(?:\w+=\S*\s+)*(\S*/)?gh(?=\s|$)")
+
+
+def _is_real_gh(program: str, env: dict[str, str] | None) -> bool:
+    if os.path.basename(program) != "gh":
+        return False
+    path = (env if env is not None else os.environ).get("PATH")
+    resolved = program if "/" in program else shutil.which(program, path=path)
+    if resolved is None:
+        return True  # it would be the real gh on a machine that has one
+    # On a machine without gh, a gh that resolves can only be a test's stub.
+    return _REAL_GH is not None and os.path.realpath(resolved) == os.path.realpath(_REAL_GH)
+
+
+def _real_gh_command(args: object, *, shell: bool, env: dict[str, str] | None) -> str | None:
+    """The command line when Popen(*args*) would start the real ``gh``, directly or through a shell; else None."""
+    argv = [os.fsdecode(args)] if isinstance(args, (str, bytes, os.PathLike)) else [os.fsdecode(a) for a in args]
+    if not argv:
+        return None
+    command = " ".join(argv)
+    scripts = [argv[0]] if shell else []
+    if os.path.basename(argv[0]) in _SHELLS and "-c" in argv[:-1]:
+        scripts.append(argv[argv.index("-c") + 1])
+    if not shell and _is_real_gh(argv[0], env):
+        return command
+    for script in scripts:
+        for match in _GH_IN_SCRIPT.finditer(script):
+            if _is_real_gh(f"{match.group(1) or ''}gh", env):
+                return command
+    return None
+
+
+def _project_callers(limit: int = 4) -> str:
+    """The innermost sova/ and tests/ frames of the current stack, so a swallowed refusal still names its caller."""
+    import traceback
+
+    root = str(Path(__file__).resolve().parent.parent) + os.sep
+    frames = [
+        f"{frame.filename[len(root) :]}:{frame.lineno} {frame.name}"
+        for frame in traceback.extract_stack()
+        if frame.filename.startswith(root) and not frame.filename.endswith("conftest.py")
+    ]
+    return " < ".join(reversed(frames[-limit:])) or "unknown"
+
+
+class RealGhCallError(RuntimeError):
+    """A test's code tried to start the real gh CLI."""
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gh(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """Fail any test whose code starts a real ``gh`` process, naming the command (#1425).
+
+    Every subprocess helper (subprocess.run, asyncio.create_subprocess_exec, ...) ends in ``Popen``, so the
+    guard sits there. A test that patches its ``gh`` helper or ``subprocess`` never reaches it. The call is
+    refused with :class:`RealGhCallError`, and the test fails at teardown even when its code swallowed that
+    error. Mock the ``gh`` helper the code under test calls instead. Yields the refused command lines.
+    """
+    original_init = subprocess.Popen.__init__
+    attempts: list[str] = []
+
+    def guarded_init(self: subprocess.Popen, args: object, *a: Any, **kw: Any) -> None:
+        command = _real_gh_command(args, shell=bool(kw.get("shell")), env=kw.get("env"))
+        if command is not None:
+            attempts.append(f"{command} (from {_project_callers()})")
+            raise RealGhCallError(f"test started a real gh process: {command}")
+        original_init(self, args, *a, **kw)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
+    yield attempts
+    if attempts:
+        pytest.fail(
+            "test started a real gh process (mock the gh helper the code calls): " + "; ".join(attempts),
+            pytrace=False,
+        )
+
+
+@pytest.fixture
+def no_pr_head_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer an agent start's PR head read (``agent_db._fetch_pr_fields``) as unreadable instead of running ``gh``.
+
+    A start tolerates it: the PR head baseline stays unrecorded.
+    """
+    monkeypatch.setattr("sova.dashboard.services.agent_db._fetch_pr_fields", AsyncMock(return_value=(None, False)))
+
+
+@pytest.fixture
+def no_launch_gh(no_pr_head_gh: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer an agent start's tracker reads (the launch issue and the PR head) as unreadable instead of running ``gh``.
+
+    A start tolerates both: the launch role stays unknown. A test that needs the issue patches
+    ``agent_validation._fetch_launch_task`` itself.
+    """
+    monkeypatch.setattr("sova.dashboard.services.agent_validation._fetch_launch_task", AsyncMock(return_value=None))
+
+
+@pytest.fixture
+def no_tracker_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub ``rollback_issue_state``, which recovery and a run downgrade call to rewrite the issue's state labels.
+
+    Reaching the real one from a test relabels live GitHub issues (#1425).
+    """
+    monkeypatch.setattr("sova.dashboard.services.agent_recovery.rollback_issue_state", AsyncMock(return_value=None))
+
+
 @pytest.fixture(autouse=True)
 def _no_review_post_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     """A review post that fails every method retries once; skip the real pause so failure-path tests stay fast."""
