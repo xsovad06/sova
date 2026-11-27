@@ -602,6 +602,83 @@ class TestLinkWorktreeEnv:
 
         assert not (tmp_path / "nest" / "escape.txt").exists()
 
+    async def test_an_entry_that_fails_to_copy_does_not_stop_the_others(self, tmp_path: Path) -> None:
+        from sova.git.worktree import link_worktree_env
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "a.txt").write_text("a", encoding="utf-8")
+        (project / "b.txt").write_text("b", encoding="utf-8")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        def fake_copy(_project: Path, wt: Path, names: list[str]) -> None:
+            if names == ["a.txt"]:
+                raise OSError("boom")
+            (wt / names[0]).write_text("copied", encoding="utf-8")
+
+        with patch("sova.git.worktree._copy_worktree_files", side_effect=fake_copy):
+            await link_worktree_env(project, worktree, ["a.txt", "b.txt"])
+
+        assert not (worktree / "a.txt").exists()
+        assert (worktree / "b.txt").exists()
+
+    async def test_compose_project_name_failure_is_not_fatal(self, tmp_path: Path) -> None:
+        from sova.git.worktree import link_worktree_env
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("A=1\n", encoding="utf-8")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        with patch("sova.git.worktree._ensure_compose_project_name", side_effect=OSError("boom")):
+            await link_worktree_env(project, worktree, [".env"])
+
+        assert (worktree / ".env").exists()
+
+
+class TestExcludeVenvLink:
+    """``_exclude_venv_link()``: making git ignore the root ``.venv`` link."""
+
+    @staticmethod
+    def _result(success: bool, stdout: str = "") -> MagicMock:
+        return MagicMock(success=success, stdout=stdout)
+
+    async def test_already_ignored_writes_nothing(self, tmp_path: Path) -> None:
+        from sova.git.worktree import _exclude_venv_link
+
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=self._result(True)) as mock_run:
+            assert await _exclude_venv_link(tmp_path) is True
+
+        mock_run.assert_awaited_once()
+
+    async def test_unresolvable_git_path_reports_failure(self, tmp_path: Path) -> None:
+        from sova.git.worktree import _exclude_venv_link
+
+        results = [self._result(False), self._result(False)]
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, side_effect=results):
+            assert await _exclude_venv_link(tmp_path) is False
+
+    async def test_unwritable_exclude_file_reports_failure(self, tmp_path: Path) -> None:
+        from sova.git.worktree import _exclude_venv_link
+
+        results = [self._result(False), self._result(True, "info/exclude\n")]
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock, side_effect=results),
+            patch("pathlib.Path.mkdir", side_effect=OSError("read-only")),
+        ):
+            assert await _exclude_venv_link(tmp_path) is False
+
+    async def test_appends_the_root_anchored_line(self, tmp_path: Path) -> None:
+        from sova.git.worktree import _exclude_venv_link
+
+        results = [self._result(False), self._result(True, "info/exclude\n")]
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, side_effect=results):
+            assert await _exclude_venv_link(tmp_path) is True
+
+        assert "/.venv" in (tmp_path / "info" / "exclude").read_text(encoding="utf-8")
+
 
 # ValidateStep regression checking
 
