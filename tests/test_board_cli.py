@@ -1,4 +1,4 @@
-"""Tests for `sova board add` (sova.cli.commands.board).
+"""Tests for `sova board add` (sova.cli.commands.board, over sova.git.board).
 
 `gh` is replaced by a scripted fake keyed on the subcommand, so each branch of the old
 prose (scope remedies, GraphQL fallback, partial failure, existing item) is pinned
@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 
 from sova.cli.app import app
 from sova.cli.commands import audit, board
+from sova.git import board as git_board
 from sova.utils.shell import ShellResult
 
 runner = CliRunner()
@@ -144,11 +145,11 @@ class FakeGh:
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, fake: FakeGh) -> None:
-    monkeypatch.setattr(board, "_gh", fake)
+    monkeypatch.setattr(git_board, "_gh", fake)
 
 
-def _run(urls: list[str]) -> list[board._Outcome]:
-    return asyncio.run(board._add_all(urls, 7))
+def _run(urls: list[str]) -> list[git_board.BoardOutcome]:
+    return asyncio.run(git_board.add_issues_to_board(urls, 7))
 
 
 class TestAddAll:
@@ -156,6 +157,41 @@ class TestAddAll:
         _install(monkeypatch, FakeGh(lambda _url: ShellResult(0, "", "")))
 
         assert [o.line() for o in _run([URL_1, URL_2])] == [f"{URL_1}: added", f"{URL_2}: added"]
+
+    def test_explicit_owner_skips_the_working_directory_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = FakeGh(lambda _url: ShellResult(0, "", ""))
+        _install(monkeypatch, fake)
+        # The working-directory repo (REPO_JSON) belongs to acme; the issue URL names upstream.
+        upstream_url = "https://github.com/upstream/gadgets/issues/5"
+
+        outcomes = asyncio.run(
+            git_board.add_issues_to_board([upstream_url], 7, repo_owner=git_board.issue_url_owner(upstream_url))
+        )
+
+        assert [o.line() for o in outcomes] == [f"{upstream_url}: added"]
+        assert fake.count("repo", "view") == 0
+        item_add = next(call for call in fake.calls if call[:2] == ("project", "item-add"))
+        assert item_add[item_add.index("--owner") + 1] == "upstream"
+
+    @pytest.mark.parametrize(
+        ("url", "owner"),
+        [(URL_1, "acme"), ("https://ghe.corp.example/team/repo/issues/9#x", "team"), ("https://x/a/b/pull/3", "")],
+    )
+    def test_issue_url_owner(self, url: str, owner: str) -> None:
+        assert git_board.issue_url_owner(url) == owner
+
+    def test_an_oversized_issue_number_fails_that_url_and_the_batch_goes_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = FakeGh(lambda _url: ShellResult(0, "", ""))
+        _install(monkeypatch, fake)
+        huge = "https://github.com/acme/widgets/issues/" + "9" * 5000
+
+        outcomes = _run([huge, URL_2])
+
+        assert [o.status for o in outcomes] == ["failed", "added"]
+        assert outcomes[0].detail == "the issue number is not a usable number"
+        assert fake.item_add_urls() == [URL_2]
 
     def test_partial_failure_still_reports_every_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def item_add(url: str) -> ShellResult:
@@ -439,7 +475,7 @@ class TestAddAll:
 
         _install(monkeypatch, FakeGh(lambda _url: READ_ORG, graphql, project_list=ONE_BOARD))
 
-        outcomes = asyncio.run(board._add_all([URL_1], 0))
+        outcomes = asyncio.run(git_board.add_issues_to_board([URL_1], 0))
 
         assert [o.line() for o in outcomes] == [
             'board: acme#4 "SOVA Roadmap" (discovered, none configured)',
@@ -512,7 +548,7 @@ class TestAddAll:
         async def broken(*args: str) -> ShellResult:
             return ShellResult(1, "", "not a repo")
 
-        monkeypatch.setattr(board, "_gh", broken)
+        monkeypatch.setattr(git_board, "_gh", broken)
 
         assert all(o.failed for o in _run([URL_1, URL_2]))
 
@@ -541,7 +577,7 @@ class TestAddAll:
             assert args[:2] == ("repo", "view")
             return ShellResult(0, stdout, "")
 
-        monkeypatch.setattr(board, "_gh", repo_view)
+        monkeypatch.setattr(git_board, "_gh", repo_view)
 
         outcomes = _run([URL_1, URL_2])
 
@@ -561,7 +597,7 @@ class TestBoardDiscovery:
         fake = FakeGh(lambda _url: ShellResult(0, "", ""), project_list=ONE_BOARD)
         _install(monkeypatch, fake)
 
-        outcomes = asyncio.run(board._add_all([URL_1], 0))
+        outcomes = asyncio.run(git_board.add_issues_to_board([URL_1], 0))
 
         assert [o.line() for o in outcomes] == ["board: acme#4 (discovered, none configured)", f"{URL_1}: added"]
         add_call = next(call for call in fake.calls if call[:2] == ("project", "item-add"))
@@ -577,7 +613,7 @@ class TestBoardDiscovery:
         fake = FakeGh(lambda _url: ShellResult(0, "", ""), project_list=listing)
         _install(monkeypatch, fake)
 
-        (outcome,) = asyncio.run(board._add_all([URL_1, URL_2], 0))
+        (outcome,) = asyncio.run(git_board.add_issues_to_board([URL_1, URL_2], 0))
 
         assert outcome.status == "skip"
         assert not outcome.failed
@@ -590,7 +626,7 @@ class TestBoardDiscovery:
     ) -> None:
         _install(monkeypatch, FakeGh(lambda _url: ShellResult(0, "", ""), project_list=READ_ORG))
 
-        (outcome,) = asyncio.run(board._add_all([URL_1], 0))
+        (outcome,) = asyncio.run(git_board.add_issues_to_board([URL_1], 0))
 
         assert outcome.failed
         assert "missing read:org scope" in outcome.detail
@@ -604,7 +640,7 @@ class TestBoardDiscovery:
             monkeypatch.delenv(var, raising=False)
         _install(monkeypatch, FakeGh(lambda _url: ShellResult(0, "", ""), project_list=listing))
 
-        (outcome,) = asyncio.run(board._add_all([URL_1], 0))
+        (outcome,) = asyncio.run(git_board.add_issues_to_board([URL_1], 0))
 
         assert outcome.failed
         assert "gh auth refresh -s project" in outcome.detail
@@ -615,7 +651,7 @@ class TestBoardDiscovery:
     ) -> None:
         _install(monkeypatch, FakeGh(lambda _url: ShellResult(0, "", ""), project_list=listing))
 
-        (outcome,) = asyncio.run(board._add_all([URL_1], 0))
+        (outcome,) = asyncio.run(git_board.add_issues_to_board([URL_1], 0))
 
         assert outcome.failed
         assert outcome.line().startswith("failed: could not")
@@ -630,20 +666,20 @@ class TestGh:
             seen["timeout"] = timeout
             return ShellResult(0, "ok", "")
 
-        monkeypatch.setattr(board, "run", fake_run)
+        monkeypatch.setattr(git_board, "run", fake_run)
 
-        result = asyncio.run(board._gh("repo", "view"))
+        result = asyncio.run(git_board._gh("repo", "view"))
 
         assert result.success
-        assert seen == {"args": ("gh", "repo", "view"), "timeout": board._GH_TIMEOUT_SECONDS}
+        assert seen == {"args": ("gh", "repo", "view"), "timeout": git_board._GH_TIMEOUT_SECONDS}
 
     def test_gh_missing_binary_is_a_failed_result_not_an_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def missing(*_args: str, timeout: int) -> ShellResult:
             raise FileNotFoundError("No such file or directory: 'gh'")
 
-        monkeypatch.setattr(board, "run", missing)
+        monkeypatch.setattr(git_board, "run", missing)
 
-        result = asyncio.run(board._gh("repo", "view"))
+        result = asyncio.run(git_board._gh("repo", "view"))
 
         assert not result.success
         assert result.returncode == 127
