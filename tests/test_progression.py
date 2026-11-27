@@ -2892,7 +2892,7 @@ class TestOwnershipGate:
         assert block.gate == "ownership"
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.core.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_review_phase_checks_pr_author(self, mock_find_pr: AsyncMock) -> None:
         """For review/integrate actions, gate on PR author instead of issue assignee."""
 
@@ -2918,7 +2918,7 @@ class TestOwnershipGate:
         mock_find_pr.assert_awaited_once_with("42", repo="owner/repo", github_user="alice")
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.core.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_review_phase_pr_author_mismatch_blocks(self, mock_find_pr: AsyncMock) -> None:
         """Review/integrate actions block if PR author doesn't match github_user."""
 
@@ -2945,7 +2945,7 @@ class TestOwnershipGate:
         assert "bob" in block.detail
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.core.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_review_phase_no_pr_uses_issue_assignee(self, mock_find_pr: AsyncMock) -> None:
         """If PR not found during review phase, fall back to issue assignee."""
         task = _task(42, state=TaskState.IN_REVIEW)
@@ -3059,7 +3059,7 @@ class TestOwnershipGate:
         assert block is None  # Fail-open
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.core.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_find_pr_fails_open(self, mock_find_pr: AsyncMock) -> None:
         """If find_pr_for_issue() fails during review phase, fall back to issue assignee."""
         task = _task(42, state=TaskState.IN_REVIEW)
@@ -3220,7 +3220,7 @@ class TestOwnershipGate:
             mock_adapter.assign.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.core.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_known_pr_info_skips_find_pr_api_call(self, mock_find_pr: AsyncMock) -> None:
         """When known_pr_info is passed with author matching github_user, find_pr_for_issue is not called."""
 
@@ -3243,7 +3243,7 @@ class TestOwnershipGate:
         mock_find_pr.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.core.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_known_pr_info_blocks_other_author(self, mock_find_pr: AsyncMock) -> None:
         """When known_pr_info has a different author, the ownership gate blocks."""
 
@@ -3292,6 +3292,50 @@ def _green_enriched_pr(**overrides: object) -> dict:
 
 
 class TestRefineInReviewAction:
+    @pytest.mark.asyncio
+    async def test_another_logins_pr_waits_using_the_config_login(self) -> None:
+        """The resolver reads github_user from the config, like the gate and dashboard (#1594).
+
+        The adapter is spec'd with no ``github_user`` attribute (a Jira-like adapter), which a bare
+        MagicMock would hide by inventing one.
+        """
+        adapter = MagicMock(spec=["repo", "get_task"])
+        engine = _make_engine(
+            SupervisorConfig(auto_address_review=True, auto_integrate=True),
+            adapter=adapter,
+            project_overrides={"github_user": "alice"},
+        )
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr(author="bob"))
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc123"},
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.WAIT
+        assert pr is not None
+        assert pr.number == 55
+
+    @pytest.mark.asyncio
+    async def test_own_pr_with_the_same_setup_integrates(self) -> None:
+        """Control for the test above: only the PR author flips WAIT to INTEGRATE."""
+        adapter = MagicMock(spec=["repo", "get_task"])
+        engine = _make_engine(
+            SupervisorConfig(auto_address_review=True, auto_integrate=True),
+            adapter=adapter,
+            project_overrides={"github_user": "alice"},
+        )
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr(author="alice"))
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc123"},
+        ):
+            action, _pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_INTEGRATE
+
     @pytest.mark.asyncio
     async def test_verdict_revise_with_auto_enabled_spawns_address_review(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=True, auto_integrate=False))

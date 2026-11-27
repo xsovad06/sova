@@ -264,6 +264,29 @@ def _no_rereview_history_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sova.roles.reviewer.ReviewerRole._is_rereview", _from_addressed)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_ownership_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every start path from asking GitHub who owns a PR, or which login ``gh`` acts as (#1594).
+
+    ``start_agent()``, ``start_command()`` and ``sova doctor`` run these lookups on every call, and a test that
+    mocks the config would otherwise run real ``gh`` commands with whatever login the machine has. The stand-ins
+    answer "unknown", the checks' own fail-open result; tests/test_ownership.py patches them back per test.
+    """
+
+    async def _unknown_login(github_user: str | None) -> None:
+        return None
+
+    async def _no_author(*_args: object, **_kwargs: object) -> str:
+        return ""
+
+    async def _no_pr(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("sova.utils.gh.get_acting_gh_login", _unknown_login)
+    monkeypatch.setattr("sova.core.ownership.get_pr_author", _no_author)
+    monkeypatch.setattr("sova.core.ownership.find_pr_for_issue", _no_pr)
+
+
 async def drain_feed_persist() -> None:
     """Await any in-flight feed-persistence tasks.
 

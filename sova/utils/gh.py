@@ -115,6 +115,72 @@ async def get_active_gh_user() -> str | None:
     return None
 
 
+# Bounded like the push-permission preflight: a start path must never wait on GitHub for long.
+_GH_LOGIN_TIMEOUT_SECONDS = 15
+# Only a login that matches github_user is cached: an unreadable one, and a mismatch the operator is told to fix
+# with `gh auth switch`, are re-read on the next call so the fix takes effect at once.
+_GH_LOGIN_CACHE_TTL = 300.0  # 5 minutes
+_gh_login_cache: dict[str, tuple[float, str]] = {}
+_ACTING_LOGIN_FAILED = "gh.acting_login_failed"
+
+
+def same_login(first: str, second: str) -> bool:
+    """True when two GitHub logins name the same account (GitHub logins are case-insensitive)."""
+    return first.casefold() == second.casefold()
+
+
+async def get_acting_gh_login(github_user: str | None) -> str | None:
+    """The login SOVA's ``gh`` calls act as for *github_user*, or None when it cannot be read.
+
+    Runs ``gh api user`` with the same environment every SOVA ``gh`` call uses (``resolve_gh_env``), so the
+    answer is the account a write would really be made as: *github_user* when its token is in the credential
+    store, else the machine's active ``gh`` account. None means unknown (``gh`` missing, logged out, timed
+    out or unreadable output): the caller must fail open on it, never read it as a match.
+    """
+    key = github_user or ""
+    cached = _gh_login_cache.get(key)
+    if cached is not None and time.monotonic() < cached[0]:
+        return cached[1]
+    try:
+        env = await resolve_gh_env(github_user)
+        result = await run("gh", "api", "user", "--jq", ".login", env=env, timeout=_GH_LOGIN_TIMEOUT_SECONDS)
+    except OSError:
+        log.warning(_ACTING_LOGIN_FAILED, user=github_user, reason="gh_unavailable", exc_info=True)
+        return None
+    except Exception:  # noqa: BLE001 (fail open: a credential-store failure leaves the login unknown, logged)
+        log.warning(_ACTING_LOGIN_FAILED, user=github_user, reason="env_unavailable", exc_info=True)
+        return None
+    login = result.stdout.strip() if result.success else ""
+    if not login:
+        log.warning(
+            _ACTING_LOGIN_FAILED,
+            user=github_user,
+            reason="timed_out" if result.timed_out else "unreadable",
+            stderr=result.stderr[:200],
+        )
+        return None
+    if github_user and same_login(login, github_user):
+        _gh_login_cache[key] = (time.monotonic() + _GH_LOGIN_CACHE_TTL, login)
+    return login
+
+
+async def gh_login_mismatch(github_user: str) -> str | None:
+    """A refusal message naming both logins when ``gh`` acts as another account than *github_user*, else None.
+
+    None also when *github_user* is empty or the acting login cannot be read: both fail open (logged by
+    ``get_acting_gh_login``), so a broken ``gh`` never blocks a start on its own.
+    """
+    if not github_user:
+        return None
+    login = await get_acting_gh_login(github_user)
+    if login is None or same_login(login, github_user):
+        return None
+    return (
+        f"gh is logged in as {login}, but this project acts as {github_user}: "
+        f"run `gh auth login` as {github_user} (or `gh auth switch --user {github_user}`) before writing to GitHub"
+    )
+
+
 async def _get_origin_url(cwd: Path | str) -> str | None:
     """Return the configured URL of the 'origin' remote, or None if unknown."""
     result = await run("git", "remote", "get-url", "origin", cwd=cwd)
