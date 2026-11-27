@@ -135,6 +135,7 @@ _BACKGROUND_NOUN = {
     "budget": "budget warning",
     "batch": "batch job finished",
     "planner": "planner warning",
+    "conversation": "confirmed conversation action",
 }
 OTHER_KIND = "other"
 
@@ -192,6 +193,14 @@ def action_started(label: str) -> str:
 
 def action_failed(label: str) -> str:
     return f"Could not run {label}"
+
+
+def conversation_action_done(summary: str, *, warning: str = "") -> str:
+    """The Activity line for an action a user confirmed from a feed conversation; a partial outcome names its
+    warning, so it never reads as plain done."""
+    if warning:
+        return f"Partly done from a conversation: {summary}. {warning}"
+    return f"Done from a conversation: {summary}"
 
 
 # Month names are fixed English: ``strftime("%B")`` follows the server's locale and would mix languages in a line.

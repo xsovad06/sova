@@ -5,12 +5,13 @@ Separated from agent_lifecycle to keep DB logic focused and testable.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -1389,3 +1390,130 @@ async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:
     except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("fetch_run_states.failed", exc_info=True)
         return {}
+
+
+class FailedStep(NamedTuple):
+    """A failed run's identity and its latest failed step, as "mark step done" previews and executes it."""
+
+    run_id: int
+    issue: str
+    role: str
+    run_status: str
+    step_name: str
+    # The step a user last marked done by hand ("" when none): a resume refused after the mark continues from it.
+    marked_step: str = ""
+
+
+_MARKED_DONE_PREFIX = "Marked done by "
+_ORIGINAL_SUMMARY_SEPARATOR = "\n\nOriginal: "
+
+
+def _current_failed_step_query(run_id: int) -> Any:
+    """The run's current failed step: the newest step whose own latest execution failed.
+
+    An older failure of a step that was later retried successfully (or marked done) is history, not the failure a
+    resume would continue from, so only each step's latest execution counts.
+    """
+    from sqlalchemy import func, select
+
+    from sova.db.models import StepExecution
+
+    latest = (
+        select(func.max(StepExecution.id))
+        .where(StepExecution.task_run_id == run_id)
+        .group_by(StepExecution.step_name)
+        .scalar_subquery()
+    )
+    return (
+        select(StepExecution)
+        .where(StepExecution.id.in_(latest), StepExecution.status == "failed")
+        .order_by(StepExecution.id.desc())
+        .limit(1)
+    )
+
+
+async def find_failed_step(run_id: int, *, project_dir: Path) -> FailedStep | None:
+    """The run's status and its current failed step (``step_name`` is "" when it has none), or None for no such run.
+
+    The current failed step is the newest step whose latest execution failed (``_current_failed_step_query``).
+    """
+    from sqlalchemy import select
+
+    from sova.db.models import StepExecution, TaskRun
+
+    async with await get_session(project_dir=project_dir) as session:
+        task_run = await session.get(TaskRun, run_id)
+        if task_run is None:
+            return None
+        failed = await session.scalar(_current_failed_step_query(run_id))
+        step = failed.step_name if failed is not None else ""
+        marked = await session.scalar(
+            select(StepExecution.step_name)
+            .where(StepExecution.task_run_id == run_id, StepExecution.output_summary.startswith(_MARKED_DONE_PREFIX))
+            .order_by(StepExecution.id.desc())
+            .limit(1)
+        )
+        issue = task_run.issue_number or ""
+        return FailedStep(run_id, issue, task_run.role, task_run.status, step or "", marked or "")
+
+
+async def mark_failed_step_done(
+    run_id: int, *, step_name: str, confirmed_by: str, reason: str, project_dir: Path
+) -> str | None:
+    """Mark a failed run's failed step done, so a resume continues from the step after it.
+
+    Replaces the hand edit of ``.claude/sova.db``. Refuses (returns the reason) unless the run is still failed and
+    ``step_name`` is its latest failed step. The audit is written on the run: the step's ``output_summary`` names who
+    confirmed it and why, and that step's open failure records are resolved by that user with the same note in their
+    context. Returns None on success. The write is shielded: a cancelled confirm cannot interrupt its commit.
+    An empty ``confirmed_by`` is refused: a manual override is never recorded without who confirmed it.
+    """
+    if not confirmed_by.strip():
+        return "No confirming user: set github_user (sova config set github_user <login>) before marking a step done"
+    refusal = await asyncio.shield(
+        _mark_failed_step_done_tx(
+            run_id, step_name=step_name, confirmed_by=confirmed_by, reason=reason, project_dir=project_dir
+        )
+    )
+    if refusal is None:
+        log.info("agent_db.step_marked_done", run_id=run_id, step=step_name, confirmed_by=confirmed_by)
+    return refusal
+
+
+async def _mark_failed_step_done_tx(
+    run_id: int, *, step_name: str, confirmed_by: str, reason: str, project_dir: Path
+) -> str | None:
+    """The one transaction behind ``mark_failed_step_done()``: the refusal reason, or None once committed."""
+    from sqlalchemy import select
+
+    from sova.db.models import FailureRecord, TaskRun
+
+    note = {"by": confirmed_by, "reason": reason, "at": datetime.now(timezone.utc).isoformat()}
+    async with await get_session(project_dir=project_dir) as session, session.begin():
+        task_run = await session.get(TaskRun, run_id)
+        if task_run is None:
+            return f"Run #{run_id} not found"
+        if task_run.status != TaskStatus.FAILED:
+            return f"Run #{run_id} is {task_run.status}, not failed"
+        step = await session.scalar(_current_failed_step_query(run_id))
+        if step is None or step.step_name != step_name:
+            return f"Step {step_name} is not the failed step of run #{run_id}"
+        step.status = "done"
+        # The note leads (find_failed_step matches its prefix); what had failed stays after it for the audit.
+        original = (step.output_summary or "").strip()
+        step.output_summary = f"{_MARKED_DONE_PREFIX}{confirmed_by}: {reason}" + (
+            f"{_ORIGINAL_SUMMARY_SEPARATOR}{original}" if original else ""
+        )
+        records = await session.scalars(
+            select(FailureRecord).where(
+                FailureRecord.task_run_id == run_id,
+                FailureRecord.step_name == step_name,
+                FailureRecord.resolved.is_(False),
+            )
+        )
+        for record in records:
+            record.resolved = True
+            record.resolved_by = confirmed_by[:30]
+            # A new dict, never an in-place edit: SQLAlchemy does not track a mutated JSON value.
+            record.context = {**(record.context or {}), "manual_resolution": note}
+    return None
