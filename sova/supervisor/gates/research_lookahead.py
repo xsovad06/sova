@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
+from sova.core.ownership import assignees_are_logins
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.db.models import TaskRun
 from sova.supervisor.dependency_graph import DependencyGraph
@@ -77,6 +78,7 @@ async def _is_held(
         repo="",
         adapter=adapter,
         task_assignees=task.assignees,
+        compare_assignees=assignees_are_logins(config.task_source.type),
     )
     if ownership_block is not None:
         return True

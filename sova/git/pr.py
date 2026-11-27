@@ -753,6 +753,24 @@ async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> 
     return branch
 
 
+async def get_pr_author(pr_number: int, *, repo: str, github_user: str = "") -> str:
+    """The login that opened a PR, ``""`` when GitHub reports no author.
+
+    Raises RuntimeError when the lookup fails or times out, so a caller can tell "no author" from "unread".
+    """
+    env = await resolve_gh_env(github_user)
+    result = await run("gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "author", env=env)
+    _track_gh_rate_limit(result, github_user)
+    if not result.success:
+        raise RuntimeError(f"Failed to read the author of PR #{pr_number}: {result.stderr[:200]}")
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse PR #{pr_number} response: {result.stdout[:200]}") from exc
+    author = data.get("author") if isinstance(data, dict) else None
+    return (author.get("login") or "") if isinstance(author, dict) else ""
+
+
 async def get_pr_head_sha(pr_number: int, *, repo: str, github_user: str = "") -> str:
     """Get the current head commit SHA of a PR. Returns empty string on failure."""
     env = await resolve_gh_env(github_user)

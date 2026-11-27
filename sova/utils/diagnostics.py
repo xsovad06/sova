@@ -53,6 +53,7 @@ _LABEL_CONFIGURED_MODELS = "configured models"
 _LABEL_AGENT_RUNTIME = "agent runtime"
 _LABEL_DATABASE_SCHEMA = "database schema"
 _LABEL_AWARENESS_PROVIDERS = "awareness providers"
+_LABEL_GH_LOGIN = "gh login matches github_user"
 
 # Bounds each awareness provider health check so a single hung provider
 # (e.g. a stalled Gmail or Calendar network call) can't block the caller
@@ -237,6 +238,28 @@ def _validate_sova_config(project_dir: Path) -> list[DiagnosticCheck]:
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append(DiagnosticCheck("config valid", False, str(exc)[:80], False))
     return checks
+
+
+async def _check_gh_login(project_dir: Path) -> list[DiagnosticCheck]:
+    """Compare the login SOVA's gh calls act as with the project's github_user; writes are refused on a mismatch."""
+    from sova.config.loader import load_config
+    from sova.utils.gh import get_acting_gh_login, same_login
+
+    try:
+        github_user = load_config(project_dir).github_user
+    except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
+        return [DiagnosticCheck(_LABEL_GH_LOGIN, False, f"config unreadable: {str(exc)[:80]}", False)]
+    if not github_user:
+        return [DiagnosticCheck(_LABEL_GH_LOGIN, False, "github_user is not configured", False)]
+    login = await get_acting_gh_login(github_user)
+    if login is None:
+        return [
+            DiagnosticCheck(_LABEL_GH_LOGIN, False, f"unreadable (gh login unknown; expected {github_user})", False)
+        ]
+    if not same_login(login, github_user):
+        detail = f"mismatch: gh acts as {login}, github_user is {github_user} (writes are refused)"
+        return [DiagnosticCheck(_LABEL_GH_LOGIN, False, detail, False)]
+    return [DiagnosticCheck(_LABEL_GH_LOGIN, True, login, False)]
 
 
 def _check_commit_convention(project_dir: Path) -> list[DiagnosticCheck]:
@@ -1011,6 +1034,7 @@ async def run_all_checks(project_dir: Path) -> list[DiagnosticCheck]:
     checks.extend(await _guarded(_LABEL_GIT_IDENTITY, _check_git_identity, project_dir))
     checks.extend(await _guarded(_LABEL_GIT_HOOKS, _check_git_hooks, project_dir))
     checks.extend(await _guarded("config", _check_sova_config, project_dir))
+    checks.extend(await _guarded(_LABEL_GH_LOGIN, _check_gh_login, project_dir))
     checks.extend(await _guarded("commit convention", _check_commit_convention, project_dir))
     checks.extend(await _guarded("install completeness", _check_install_completeness, project_dir))
     checks.extend(await _guarded(_LABEL_DATABASE_SCHEMA, _check_database_schema, project_dir))

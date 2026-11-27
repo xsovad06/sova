@@ -18,9 +18,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.adapters.base import TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
+from sova.core.ownership import assignees_are_logins
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
-from sova.dashboard.services.work_state import _build_pr_facts, resolve_next_action
+from sova.dashboard.services.work_state import WorkItemState, _build_pr_facts, resolve_next_action
 from sova.dashboard.services.work_verdict import resolve_sova_verdict
 from sova.db.models import SupervisorDecision
 from sova.git.pr import PRInfo, PRLookupError, find_pr_for_issue_checked
@@ -1168,6 +1169,7 @@ class TaskProgressionEngine:
                 adapter=self._adapter,
                 task_assignees=task_assignees,
                 known_pr_info=refined_pr_info,
+                compare_assignees=assignees_are_logins(self._config.task_source.type),
             ),
         )
         ownership_block, discovered_pr = ownership_result
@@ -1417,8 +1419,15 @@ class TaskProgressionEngine:
             # review_budget_exhausted rule reads as "unlimited" and the
             # supervisor would re-spawn address cycles forever.
             max_address_cycles=self._config.pipeline.max_address_review_cycles,
+            # The same owner rule and login source (config) the gate and dashboard use;
+            # empty turns it off with respect_ownership.
+            github_user=self._config.github_user if self._config.supervisor.respect_ownership else "",
         )
         resolution = resolve_next_action(facts)
+        if resolution.state is WorkItemState.PR_OWNED_BY_OTHER:
+            # Another login's PR is theirs to move on: nothing for this supervisor to do or to ask about.
+            log.info("refine_in_review.owned_by_other", issue=issue, pr=pr_info.number, author=facts.pr_author)
+            return ProgressionAction.WAIT, pr_info
 
         mapped = _ACTION_ID_TO_PROGRESSION.get(resolution.action_id or "")
         if mapped is None:
