@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -103,6 +104,19 @@ class Milestone:
     description: str = ""
 
 
+@dataclass(frozen=True)
+class NativeRelationships:
+    """A tracker's own blocking relationships, read for a batch of issues.
+
+    ``blockers`` maps every issue whose read succeeded to the open issues blocking it (open ``blocked_by``
+    issues and open sub-issues); an empty set there is the only "no native blockers" answer. ``unverified``
+    names the issues whose read failed, was skipped or was truncated: their blockers are unknown, not absent.
+    """
+
+    blockers: dict[int, frozenset[int]] = field(default_factory=dict)
+    unverified: frozenset[int] = frozenset()
+
+
 def _get_egress_mode() -> EgressMode:
     """Load egress mode from config (no cache: supports multi-project mode)."""
     try:
@@ -132,6 +146,20 @@ class TaskAdapter(ABC):
     def __init__(self, repo: str, github_user: str = "") -> None:
         self.repo = repo
         self.github_user = github_user
+
+    async def get_native_relationships(
+        self,
+        issue_ids: Collection[int],
+        *,
+        should_skip: Callable[[], bool] | None = None,
+    ) -> NativeRelationships | None:
+        """Read the tracker's native blocking relationships for *issue_ids*.
+
+        ``None`` (this default) means the tracker has no such read, which is not a failed one. *should_skip*,
+        checked before each request, lets the caller withhold the read (an API cooldown); the issues it
+        skips come back in ``unverified``.
+        """
+        return None
 
     @abstractmethod
     async def list_tasks(self, filters: TaskFilters | None = None) -> list[Task]:

@@ -37,6 +37,10 @@ _LOCAL_READY = SUITABILITY_SHORTHANDS["ready"]
 _LOCAL_INTERACTIVE = SUITABILITY_SHORTHANDS["interactive"]
 _LOCAL_HUMAN_ONLY = SUITABILITY_SHORTHANDS["human-only"]
 
+# The `graph` reason for an issue whose native tracker relationships (GitHub `blocked_by`, sub-issues)
+# could not be read: its blockers are unknown, which holds it like an open dependency would.
+RELATIONSHIPS_UNVERIFIED = "native relationships unverified"
+
 
 class SuitabilityMode(StrEnum):
     """How an issue may (or may not) be picked up for autonomous agent work."""
@@ -116,7 +120,10 @@ def assess_suitability(
     and `agent:interactive-recommended` and is read even with
     `consider_dependencies=False`) and an open dependency. Only the dependency
     cause is live: it is derived from the graph, so it clears when the blocker
-    closes, whereas the label stays until a human removes it.
+    closes, whereas the label stays until a human removes it. A dependency is
+    a `## Dependencies` reference or a native tracker relationship; when the
+    graph could not read the latter (`relationships_unverified()`), the issue
+    is blocked with a `RELATIONSHIPS_UNVERIFIED` reason, never read as free.
 
     A tracker label always wins over a conflicting `local_assessment` for
     `agent:ready`/`agent:human-only`/`type: epic`: `agent:ready` clears a
@@ -158,12 +165,11 @@ def assess_suitability(
         blocked_by = _unsatisfied_dependencies(task, graph)
         if blocked_by is None:
             return Suitability(mode=SuitabilityMode.BLOCKED, reasons=[{"source": "graph", "value": "unavailable"}])
-        if blocked_by:
-            return Suitability(
-                mode=SuitabilityMode.BLOCKED,
-                reasons=[{"source": "dependency", "value": dep} for dep in blocked_by],
-                blocked_by=blocked_by,
-            )
+        reasons: list[dict] = [{"source": "dependency", "value": dep} for dep in blocked_by]
+        if graph is not None and graph.relationships_unverified(int(task.id)):
+            reasons.append({"source": "graph", "value": RELATIONSHIPS_UNVERIFIED})
+        if reasons:
+            return Suitability(mode=SuitabilityMode.BLOCKED, reasons=reasons, blocked_by=blocked_by)
 
     if is_interactive_recommended(labels):
         return Suitability(

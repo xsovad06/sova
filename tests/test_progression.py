@@ -296,6 +296,29 @@ class TestDependencyGate:
         result = check_dependency_gate(1, graph)
         assert result is None
 
+    def test_native_blocker_blocks_until_it_closes(self) -> None:
+        """The adapter reports an open blocked_by issue and an open sub-issue alike, as a native blocker."""
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        open_graph = DependencyGraph([_task(1, state=TaskState.TRIAGED), _task(2)], native_blockers={1: {2}})
+        closed_graph = DependencyGraph(
+            [_task(1, state=TaskState.TRIAGED), _task(2, state=TaskState.DONE)], native_blockers={1: {2}}
+        )
+
+        result = check_dependency_gate(1, open_graph)
+        assert result is not None
+        assert "#2" in result.detail
+        assert check_dependency_gate(1, closed_graph) is None
+
+    def test_unverified_relationships_block(self) -> None:
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        graph = DependencyGraph([_task(1, state=TaskState.TRIAGED)], unverified={1})
+        result = check_dependency_gate(1, graph)
+        assert result is not None
+        assert result.gate == "dependency"
+        assert "unverified" in result.detail
+
 
 # ---------------------------------------------------------------------------
 # _check_quota_gate

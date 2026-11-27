@@ -5,10 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
-from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import (
+    AdapterError,
+    Milestone,
+    NativeRelationships,
+    PRReview,
+    Task,
+    TaskAdapter,
+    TaskFilters,
+    TaskState,
+)
 from sova.adapters.label_catalog import LABEL_CATALOG, REQUIRED_LABELS
 from sova.adapters.priority import Priority
 from sova.utils.gh import resolve_gh_env
@@ -65,6 +75,14 @@ _STATE_TO_BOARD_NAMES: dict[TaskState, list[str]] = {
 # can therefore resolve to a merged PR even though ``gh issue list`` correctly
 # excludes PRs.  Both tracker states are terminal from SOVA's perspective.
 _TERMINAL_TASK_STATES = {"CLOSED", "MERGED"}
+
+# Issues per native relationship query (one GraphQL alias each), and relationships read per issue and kind.
+# A longer relationship list is not paged: its issue is reported unverified rather than cut to one page.
+_NATIVE_RELATIONSHIP_CHUNK = 25
+_NATIVE_RELATIONSHIP_PAGE = 100
+# The issue's own relationship lists the query reads: the issues blocking it, and its sub-issues (an open
+# child blocks its parent).
+_NATIVE_RELATIONSHIP_FIELDS = ("blockedBy", "subIssues")
 
 
 @dataclass
@@ -188,6 +206,72 @@ class GitHubAdapter(TaskAdapter):
             log.warning("get_task.bad_json", issue=task_id, stdout=result.stdout[:200])
             raise RuntimeError(f"Failed to parse issue #{task_id} from {self.repo}: {e}") from e
         return _parse_issue(issue)
+
+    async def get_native_relationships(
+        self,
+        issue_ids: Collection[int],
+        *,
+        should_skip: Callable[[], bool] | None = None,
+    ) -> NativeRelationships:
+        """Read the open ``blocked_by`` issues and open sub-issues of *issue_ids*, one GraphQL query per chunk.
+
+        Every issue comes back either in ``blockers`` or in ``unverified``: a failed, rate-limited,
+        partial or truncated answer for an issue makes it unverified, never an issue without blockers.
+        """
+        ids = sorted({int(i) for i in issue_ids})
+        blockers: dict[int, frozenset[int]] = {}
+        unverified: set[int] = set()
+        for start in range(0, len(ids), _NATIVE_RELATIONSHIP_CHUNK):
+            if should_skip is not None and should_skip():
+                log.warning("native_relationships.skipped", reason="github_cooldown", issues=len(ids) - start)
+                unverified.update(ids[start:])
+                break
+            chunk = ids[start : start + _NATIVE_RELATIONSHIP_CHUNK]
+            read = await self._read_native_relationship_chunk(chunk)
+            blockers.update(read)
+            unverified.update(issue for issue in chunk if issue not in read)
+        return NativeRelationships(blockers=blockers, unverified=frozenset(unverified))
+
+    async def _read_native_relationship_chunk(self, chunk: list[int]) -> dict[int, frozenset[int]]:
+        """Open blockers per issue of *chunk*; an issue missing from the result could not be read."""
+        owner, name = self.repo.split("/", 1) if "/" in self.repo else (self.github_user, self.repo)
+        page = (
+            f"(first: {_NATIVE_RELATIONSHIP_PAGE}) "
+            "{ pageInfo { hasNextPage } nodes { number state repository { nameWithOwner } } }"
+        )
+        aliases = " ".join(
+            f"i{issue}: issue(number: {issue}) {{ {' '.join(f + page for f in _NATIVE_RELATIONSHIP_FIELDS)} }}"
+            for issue in chunk
+        )
+        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
+        # Compared against each blocker's repository, so a bare configured repo name still matches its own issues.
+        repo_name = f"{owner}/{name}"
+        result = await self._gh("api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}")
+        if result.is_rate_limited:
+            log.warning("native_relationships.rate_limited", issues=len(chunk))
+            return {}
+        # A partial answer (one alias not found) exits non-zero but still prints the data for the other aliases.
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            data = None
+        repository = (data.get("data") or {}).get("repository") if isinstance(data, dict) else None
+        if not isinstance(repository, dict):
+            log.warning("native_relationships.failed", issues=len(chunk), stderr=result.stderr[:200])
+            return {}
+        errored = _errored_aliases(data.get("errors"))
+        if errored is None:
+            log.warning("native_relationships.unattributed_error", issues=len(chunk), errors=str(data["errors"])[:200])
+            return {}
+        read: dict[int, frozenset[int]] = {}
+        for issue in chunk:
+            alias = f"i{issue}"
+            found = None if alias in errored else _open_native_blockers(issue, repository.get(alias), repo_name)
+            if found is None:
+                log.warning("native_relationships.issue_unverified", issue=issue)
+            else:
+                read[issue] = found
+        return read
 
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
         log.info("transition_state", issue=task_id, new_state=str(new_state), repo=self.repo)
@@ -1043,6 +1127,50 @@ class GitHubAdapter(TaskAdapter):
             if option_id:
                 return option_id
         return None
+
+
+def _open_native_blockers(issue: int, node: object, repo: str) -> frozenset[int] | None:
+    """The open issues of *repo* blocking *issue* in one alias's answer, or None if it is unreadable."""
+    if not isinstance(node, dict):
+        return None
+    blockers: set[int] = set()
+    for relationship in _NATIVE_RELATIONSHIP_FIELDS:
+        connection = node.get(relationship)
+        if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+            return None
+        if (connection.get("pageInfo") or {}).get("hasNextPage") is not False:
+            log.warning("native_relationships.truncated", issue=issue, relationship=relationship)
+            return None
+        for related in connection["nodes"]:
+            if not isinstance(related, dict) or not isinstance(related.get("number"), int):
+                return None
+            if related.get("state") == "CLOSED" or related["number"] == issue:
+                continue
+            related_repo = (related.get("repository") or {}).get("nameWithOwner")
+            if not isinstance(related_repo, str) or not related_repo:
+                return None
+            if related_repo.lower() != repo.lower():
+                # No node in this repository's graph can stand for it.
+                log.debug(
+                    "native_relationships.cross_repo_ignored",
+                    issue=issue,
+                    related=related["number"],
+                    related_repo=related_repo,
+                )
+                continue
+            blockers.add(related["number"])
+    return frozenset(blockers)
+
+
+def _errored_aliases(errors: object) -> set[str] | None:
+    """The query aliases a GraphQL ``errors`` list names, or None when an error names no alias."""
+    aliases: set[str] = set()
+    for error in errors if isinstance(errors, list) else []:
+        path = error.get("path") if isinstance(error, dict) else None
+        if not isinstance(path, list) or len(path) < 2 or not isinstance(path[1], str):
+            return None
+        aliases.add(path[1])
+    return aliases
 
 
 def _parse_issue(data: dict) -> Task:

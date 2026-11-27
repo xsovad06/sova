@@ -28,12 +28,21 @@ def check_dependency_gate(issue: int, graph: DependencyGraph) -> BlockReason | N
     withhold a spawn. The two cases are handled separately, rather than both
     falling into one `if not blocked_by` check, only so the fail-open case is
     logged and not silently indistinguishable from "satisfied".
+
+    An issue whose native tracker relationships could not be read
+    (`DependencyGraph.relationships_unverified()`) is blocked even with no
+    known open dependency: its blockers are unknown, not absent.
     """
     blocked_by = unsatisfied_dependencies(issue, graph)
     if blocked_by is None:
         log.debug("dependency_gate.data_unavailable", issue=issue)
         return None
     if not blocked_by:
+        if graph.relationships_unverified(issue):
+            return BlockReason(
+                gate="dependency",
+                detail="Native blocked-by and sub-issue relationships could not be read (unverified)",
+            )
         return None
 
     dep_id = blocked_by[0]

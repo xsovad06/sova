@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sova.adapters.base import AdapterError, Task, TaskState
+from sova.adapters.base import AdapterError, NativeRelationships, Task, TaskState
 from sova.adapters.priority import Priority
 from sova.supervisor.dependency_graph import (
     _GRAPH_ISSUE_LIMIT,
@@ -28,7 +28,13 @@ from sova.supervisor.dependency_graph import (
     parse_dependencies,
 )
 from sova.supervisor.labels import is_on_hold
-from sova.supervisor.suitability import Suitability, SuitabilityMode, rank_next_tasks
+from sova.supervisor.suitability import (
+    RELATIONSHIPS_UNVERIFIED,
+    Suitability,
+    SuitabilityMode,
+    assess_suitability,
+    rank_next_tasks,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1036,6 +1042,152 @@ class TestGraphCacheInvalidationRace:
         await build
 
         assert "owner/repo" in _graph_cache
+
+
+class TestNativeRelationshipEdges:
+    def test_native_blockers_are_edges_beside_the_body_ones(self) -> None:
+        graph = DependencyGraph(
+            [_task(1), _task(2), _task(3, body="## Dependencies\n- #1\n")],
+            native_blockers={3: {1, 2, 3}},
+        )
+
+        assert graph.edges == [(3, 1), (3, 2)]  # the duplicate collapses, the self reference is dropped
+        assert graph.get_dependents(2) == {3}
+        assert graph.to_dict()["nodes"][2]["dependencies"] == [1, 2]
+
+    def test_a_cycle_through_a_native_edge_is_reported(self) -> None:
+        graph = DependencyGraph([_task(1, body="## Dependencies\n- #2\n"), _task(2)], native_blockers={2: {1}})
+
+        assert graph.validate().cycle_members == [1, 2]
+
+    def test_only_the_named_issues_are_unverified(self) -> None:
+        graph = DependencyGraph([_task(1), _task(2)], unverified={1})
+
+        assert graph.relationships_unverified(1)
+        assert not graph.relationships_unverified(2)
+
+
+def _native_tracker(tasks: list[Task], relationships: object) -> AsyncMock:
+    """A tracker stub listing *tasks*, whose native relationship read returns (or raises) *relationships*."""
+    adapter = AsyncMock()
+    adapter.repo = ""
+    adapter.github_user = "bot"
+    adapter.list_tasks.return_value = tasks
+    if isinstance(relationships, Exception):
+        adapter.get_native_relationships.side_effect = relationships
+    else:
+        adapter.get_native_relationships.return_value = relationships
+    return adapter
+
+
+class TestBuildDependencyGraphNativeRelationships:
+    @pytest.mark.asyncio
+    async def test_only_open_issues_are_read(self) -> None:
+        tasks = [_task(10, milestone="M"), _task(5), _task(7, state=TaskState.DONE, milestone="M")]
+        adapter = _native_tracker(tasks, NativeRelationships(blockers={5: frozenset(), 10: frozenset()}))
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.has_task(7)
+        assert adapter.get_native_relationships.await_args.args[0] == [5, 10]
+
+    @pytest.mark.parametrize(("blocker_state", "ready"), [(TaskState.TRIAGED, [5]), (TaskState.DONE, [10])])
+    @pytest.mark.asyncio
+    async def test_a_native_blocker_holds_the_issue_until_it_closes(self, blocker_state: TaskState, ready) -> None:
+        adapter = _native_tracker(
+            [_task(10, state=TaskState.TRIAGED), _task(5, state=blocker_state, milestone="M"), _task(6, milestone="M")],
+            NativeRelationships(blockers={10: frozenset({5}), 5: frozenset(), 6: frozenset()}),
+        )
+
+        graph = await build_dependency_graph(adapter)
+
+        assert (10, 5) in graph.edges
+        assert [i for i in graph.get_ready_tasks() if i != 6] == ready
+
+    @pytest.mark.asyncio
+    async def test_a_blocker_outside_the_listing_is_fetched_on_its_own(self) -> None:
+        adapter = _native_tracker([_task(10)], NativeRelationships(blockers={10: frozenset({50})}))
+        adapter.get_task.return_value = _task(50, state=TaskState.TRIAGED)
+
+        graph = await build_dependency_graph(adapter)
+
+        adapter.get_task.assert_awaited_once_with("50")
+        assert assess_suitability(graph.get_task(10), graph).blocked_by == [50]
+
+    @pytest.mark.asyncio
+    async def test_a_blocker_that_cannot_be_fetched_blocks_as_a_missing_reference(self) -> None:
+        adapter = _native_tracker([_task(10)], NativeRelationships(blockers={10: frozenset({50})}))
+        adapter.get_task.side_effect = RuntimeError("not found")
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.validate().missing_refs == [50]
+        assert graph.get_ready_tasks() == []
+
+    @pytest.mark.parametrize(
+        ("relationships", "ready"),
+        [
+            pytest.param(RuntimeError("boom"), [], id="raised"),
+            pytest.param(NativeRelationships(unverified=frozenset({10, 20})), [], id="unverified"),
+            pytest.param(NativeRelationships(blockers={20: frozenset()}), [20], id="not-answered"),
+            pytest.param(
+                NativeRelationships(blockers={10: frozenset(), 20: frozenset()}, unverified=frozenset({10})),
+                [20],
+                id="answered-and-unverified",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_an_unread_issue_is_held_and_the_graph_still_builds(self, relationships: object, ready) -> None:
+        adapter = _native_tracker([_task(10), _task(20)], relationships)
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.nodes == [10, 20]
+        assert graph.relationships_unverified(10)
+        assert graph.get_ready_tasks() == ready
+        assert assess_suitability(graph.get_task(10), graph).reasons == [
+            {"source": "graph", "value": RELATIONSHIPS_UNVERIFIED}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_tracker_without_native_relationships_holds_nothing(self) -> None:
+        adapter = _native_tracker([_task(10)], None)
+
+        graph = await build_dependency_graph(adapter)
+
+        assert not graph.relationships_unverified(10)
+        assert graph.get_ready_tasks() == [10]
+
+    @pytest.mark.asyncio
+    async def test_the_read_is_withheld_during_the_github_cooldown(self) -> None:
+        from sova.supervisor import github_quota
+
+        adapter = _native_tracker([_task(10)], NativeRelationships(blockers={10: frozenset()}))
+        with (
+            patch.dict(github_quota._trackers, {}, clear=True),
+            patch.object(github_quota.GitHubQuotaTracker, "_emit_hit_event"),
+        ):
+            await build_dependency_graph(adapter)
+            should_skip = adapter.get_native_relationships.await_args.kwargs["should_skip"]
+            assert should_skip() is False
+            github_quota.get_github_quota_tracker("bot").record_rate_limit_hit()
+            assert should_skip() is True
+
+    @pytest.mark.asyncio
+    async def test_an_invalidation_during_the_read_keeps_the_graph_out_of_the_cache(self) -> None:
+        adapter = _native_tracker([_task(10)], None)
+        adapter.repo = "owner/repo"
+
+        async def read(issue_ids, **kwargs):
+            invalidate_graph_cache("owner/repo")
+            return NativeRelationships(blockers={10: frozenset()})
+
+        adapter.get_native_relationships.side_effect = read
+
+        await build_dependency_graph(adapter)
+
+        assert "owner/repo" not in _graph_cache
 
 
 class TestBuildDependencyGraphIssueWindow:

@@ -11,6 +11,7 @@ from sova.adapters.priority import Priority
 from sova.supervisor.dependency_graph import DependencyGraph
 from sova.supervisor.suitability import (
     AGENT_ELIGIBLE_MODES,
+    RELATIONSHIPS_UNVERIFIED,
     RankedTask,
     SuitabilityMode,
     assess_suitability,
@@ -163,6 +164,34 @@ class TestAssessSuitabilityDependencies:
         graph = DependencyGraph(tasks)
         result = assess_suitability(graph.get_task(2), graph)
         assert result.mode == "human"
+
+
+class TestAssessSuitabilityNativeRelationships:
+    @pytest.mark.parametrize(
+        ("blocker_state", "mode", "blocked_by"),
+        [(TaskState.TRIAGED, "blocked", [1]), (TaskState.DONE, "unclassified", [])],
+    )
+    def test_a_native_blocker_blocks_until_it_closes(self, blocker_state: TaskState, mode: str, blocked_by) -> None:
+        graph = DependencyGraph([_task(1, state=blocker_state), _task(2)], native_blockers={2: {1}})
+        result = assess_suitability(graph.get_task(2), graph)
+        assert result.mode == mode
+        assert result.blocked_by == blocked_by
+
+    def test_unverified_relationships_block_with_their_own_reason(self) -> None:
+        graph = DependencyGraph([_task(2, labels=["agent:ready"])], unverified={2})
+        result = assess_suitability(graph.get_task(2), graph)
+        assert result.mode == "blocked"
+        assert result.blocked_by == []
+        assert result.reasons == [{"source": "graph", "value": RELATIONSHIPS_UNVERIFIED}]
+
+    def test_unverified_relationships_add_to_known_dependencies(self) -> None:
+        graph = DependencyGraph([_task(1), _task(2, body="## Dependencies\n- #1\n")], unverified={2})
+        result = assess_suitability(graph.get_task(2), graph)
+        assert result.blocked_by == [1]
+        assert result.reasons == [
+            {"source": "dependency", "value": 1},
+            {"source": "graph", "value": RELATIONSHIPS_UNVERIFIED},
+        ]
 
 
 class TestAssessSuitabilityOnHold:

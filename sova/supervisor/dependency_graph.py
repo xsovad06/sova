@@ -6,11 +6,12 @@ import asyncio
 import re
 import time
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from sova.adapters.base import AdapterError, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import AdapterError, NativeRelationships, Task, TaskAdapter, TaskFilters, TaskState
+from sova.supervisor.github_quota import get_github_quota_tracker
 
 # is_ready: used by callers importing it from here rather than from its
 # canonical home in sova.supervisor.labels (kept for backward compatibility).
@@ -161,12 +162,23 @@ class ParallelGroup:
 class DependencyGraph:
     """DAG of issue dependencies with readiness checks and traversal.
 
-    Built from issue bodies via the adapter layer.  No DB tables. Graphs are
+    Built from issue bodies via the adapter layer, plus the tracker's native blocking relationships
+    (*native_blockers*) where the tracker has them.  No DB tables. Graphs are
     cached per-repo for ``_GRAPH_CACHE_TTL`` seconds (180s) and invalidated
     on agent spawn or epic close. Milestone-filtered builds bypass the cache.
+
+    *unverified* names the issues whose native relationships could not be read: their blockers are
+    unknown, so `assess_suitability()` and `check_dependency_gate()` hold them as blocked.
     """
 
-    def __init__(self, tasks: list[Task], *, requested: Iterable[int] | None = None) -> None:
+    def __init__(
+        self,
+        tasks: list[Task],
+        *,
+        requested: Iterable[int] | None = None,
+        native_blockers: Mapping[int, Iterable[int]] | None = None,
+        unverified: Iterable[int] = (),
+    ) -> None:
         self._tasks: dict[int, Task] = {int(t.id): t for t in tasks}
         # When this graph was fetched (time.monotonic()), so a holder of a cached graph can say how old it is.
         self.fetched_at: float = time.monotonic()
@@ -178,9 +190,12 @@ class DependencyGraph:
         # reverse: rdeps[B] = {A} means A depends on B
         self._rdeps: dict[int, set[int]] = defaultdict(set)
 
+        self._unverified: frozenset[int] = frozenset(unverified)
+
         for task in tasks:
             tid = int(task.id)
             deps = parse_dependencies(task.body, exclude_self=tid)
+            deps |= {dep for dep in (native_blockers or {}).get(tid, ()) if dep != tid}
             self._deps[tid] = deps
             for dep in deps:
                 self._rdeps[dep].add(tid)
@@ -229,6 +244,10 @@ class DependencyGraph:
     def get_dependents(self, issue: int) -> set[int]:
         """Issues that directly depend on the given issue."""
         return set(self._rdeps.get(issue, set()))
+
+    def relationships_unverified(self, issue: int) -> bool:
+        """True when the issue's native tracker relationships could not be read, so its blockers are unknown."""
+        return issue in self._unverified
 
     def validate(self) -> ValidationResult:
         """Validate the DAG: detect cycles and missing references.
@@ -607,6 +626,37 @@ async def _with_every_open_issue(adapter: TaskAdapter, window: list[Task], miles
     return [*window, *older_open]
 
 
+async def _read_native_relationships(adapter: TaskAdapter, issue_ids: list[int]) -> NativeRelationships | None:
+    """The tracker's native blockers of *issue_ids*, or None when the tracker reads none.
+
+    The read is withheld while the GitHub API cooldown is active, and a raised error is no answer: either
+    way the issues it covers come back unverified. Every requested issue the adapter neither answered nor
+    marked is unverified too, so only an explicit empty answer reads as "no native blockers".
+    """
+    # An adapter without the method (a duck-typed one) has nothing to read, like the TaskAdapter default.
+    read = getattr(adapter, "get_native_relationships", None)
+    if not issue_ids or read is None:
+        return None
+    identity = getattr(adapter, "github_user", "")
+    try:
+        native = await read(issue_ids, should_skip=lambda: get_github_quota_tracker(identity).should_skip())
+    except Exception:  # noqa: BLE001 (an optional read: its issues are held as unverified, the graph still builds)
+        log.warning("build_dependency_graph.native_relationships_failed", issues=len(issue_ids), exc_info=True)
+        return NativeRelationships(unverified=frozenset(issue_ids))
+    # None is the adapter's "not supported"; anything else that is not a result (a test double) is treated alike.
+    if not isinstance(native, NativeRelationships):
+        return None
+    unverified = native.unverified | (set(issue_ids) - set(native.blockers))
+    blockers = {issue: deps for issue, deps in native.blockers.items() if issue not in unverified}
+    log.info(
+        "build_dependency_graph.native_relationships",
+        issues=len(issue_ids),
+        blocked=sum(1 for deps in blockers.values() if deps),
+        unverified=len(unverified),
+    )
+    return NativeRelationships(blockers=blockers, unverified=frozenset(unverified))
+
+
 async def build_dependency_graph(
     adapter: TaskAdapter,
     *,
@@ -624,6 +674,12 @@ async def build_dependency_graph(
     When *milestone* is provided, only tasks in that milestone are fetched.
     Dependencies outside the filtered set are fetched individually, and the graph's
     ``requested_issues`` names only the ones the milestone fetch returned.
+
+    The tracker's native blocking relationships (GitHub ``blocked_by`` and sub-issues) of the open
+    issues are read once per build and added as edges; a blocker they name outside the fetched set is
+    fetched individually like a body dependency. An issue whose relationships could not be read is
+    marked unverified on the graph. Only the listed open issues are read: every open issue is listed
+    unless *milestone* narrows the build, and a closed issue is never a candidate to hold.
 
     Results are cached per-repo for ``_GRAPH_CACHE_TTL`` seconds. Milestone-
     filtered builds bypass the cache (rare, manual-only path).
@@ -680,6 +736,12 @@ async def build_dependency_graph(
         deps = parse_dependencies(task.body, exclude_self=tid)
         all_dep_ids |= deps
 
+    native = await _read_native_relationships(
+        adapter, sorted(tid for tid, task in task_map.items() if task.state != TaskState.DONE)
+    )
+    for native_deps in (native.blockers if native else {}).values():
+        all_dep_ids |= native_deps
+
     missing_ids = all_dep_ids - set(task_map.keys())
     if missing_ids:
 
@@ -695,7 +757,12 @@ async def build_dependency_graph(
             if dep_task is not None:
                 task_map[int(dep_task.id)] = dep_task
 
-    graph = DependencyGraph(list(task_map.values()), requested=requested)
+    graph = DependencyGraph(
+        list(task_map.values()),
+        requested=requested,
+        native_blockers=native.blockers if native else None,
+        unverified=native.unverified if native else (),
+    )
     # Still returned when an invalidation raced it: this caller asked before it, only the cache must not keep it.
     if cacheable and _graph_cache_generation.get(repo_key, 0) == generation:
         _graph_cache[repo_key] = (time.monotonic(), graph)

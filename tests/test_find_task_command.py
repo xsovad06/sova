@@ -67,11 +67,6 @@ class TestWriteBack:
         assert "`agent:on-hold`" not in bullet
         assert "`agent:human-only`" not in bullet
 
-    def test_native_only_dependency_block_is_named_because_the_graph_cannot_see_it(self) -> None:
-        bullet = _bullet(self._SECTION, "BLOCKED, dependency only")
-        assert "does not yet read GitHub's native `dependencies/blocked_by` or `sub_issues`" in bullet
-        assert "name the relationship in its `Needs` column" in bullet
-
     def test_hold_records_the_underlying_mode_plus_the_on_hold_label(self) -> None:
         bullet = _bullet(self._SECTION, "BLOCKED, hold")
         assert "underlying mode" in bullet

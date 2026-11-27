@@ -2063,3 +2063,181 @@ class TestProjectBoard:
         with patch.object(self.adapter, "_move_on_board", new_callable=AsyncMock) as mock_move:
             await self.adapter.transition_state("42", TaskState.DONE)
             mock_move.assert_called_once_with("42", TaskState.DONE)
+
+
+# ---------------------------------------------------------------------------
+# Native relationships (blocked_by, sub-issues)
+# ---------------------------------------------------------------------------
+
+
+def _relation(number: int, state: str = "OPEN", repo: str = "user/repo") -> dict:
+    return {"number": number, "state": state, "repository": {"nameWithOwner": repo}}
+
+
+def _connection(*nodes: dict, more: bool = False) -> dict:
+    return {"pageInfo": {"hasNextPage": more}, "nodes": list(nodes)}
+
+
+def _issue_node(blocked_by: dict | None = None, sub_issues: dict | None = None) -> dict:
+    return {"blockedBy": blocked_by or _connection(), "subIssues": sub_issues or _connection()}
+
+
+def _graphql(repository: dict | None, errors: list[dict] | None = None, returncode: int = 0):
+    body: dict = {"data": {"repository": repository}}
+    if errors:
+        body["errors"] = errors
+    return _shell_result(stdout=json.dumps(body), returncode=returncode)
+
+
+class TestNativeRelationships:
+    def setup_method(self) -> None:
+        self.adapter = GitHubAdapter(repo="user/repo")
+
+    @pytest.fixture
+    def mock_run(self):
+        from sova.supervisor import github_quota
+
+        with (
+            patch("sova.adapters.github.run", new_callable=AsyncMock) as mock,
+            patch("sova.adapters.github.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.dict(github_quota._trackers, {}, clear=True),
+            # A rate-limit hit emits a feed event, whose DB write would outlive the test.
+            patch.object(github_quota.GitHubQuotaTracker, "_emit_hit_event"),
+        ):
+            yield mock
+
+    async def test_jira_keeps_the_not_supported_default(self) -> None:
+        from sova.adapters.jira import JiraAdapter
+
+        jira = JiraAdapter.__new__(JiraAdapter)  # the default reads nothing, so no client is needed
+
+        assert await jira.get_native_relationships([10]) is None
+
+    async def test_open_blocked_by_and_open_sub_issues_are_blockers(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _graphql(
+            {
+                "i10": _issue_node(
+                    blocked_by=_connection(_relation(5), _relation(6, state="CLOSED"), _relation(10)),
+                    sub_issues=_connection(_relation(11), _relation(12, state="CLOSED")),
+                ),
+                "i20": _issue_node(),
+            }
+        )
+
+        result = await self.adapter.get_native_relationships([20, 10])
+
+        assert result.blockers == {10: frozenset({5, 11}), 20: frozenset()}
+        assert result.unverified == frozenset()
+        query = next(a for a in mock_run.await_args.args if a.startswith("query="))
+        assert "i10: issue(number: 10)" in query and "i20: issue(number: 20)" in query
+
+    async def test_a_cross_repository_blocker_is_ignored(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _graphql(
+            {
+                "i10": _issue_node(
+                    blocked_by=_connection(_relation(5, repo="other/repo"), _relation(6, repo="User/Repo"))
+                )
+            }
+        )
+
+        result = await self.adapter.get_native_relationships([10])
+
+        assert result.blockers == {10: frozenset({6})}
+
+    async def test_a_bare_repo_name_still_keeps_its_own_blockers(self, mock_run: AsyncMock) -> None:
+        adapter = GitHubAdapter(repo="repo", github_user="user")
+        mock_run.return_value = _graphql({"i10": _issue_node(blocked_by=_connection(_relation(5)))})
+
+        result = await adapter.get_native_relationships([10])
+
+        assert result.blockers == {10: frozenset({5})}
+
+    async def test_a_cooldown_starting_between_chunks_leaves_only_the_rest_unverified(
+        self, mock_run: AsyncMock
+    ) -> None:
+        from sova.adapters.github import _NATIVE_RELATIONSHIP_CHUNK
+
+        ids = list(range(1, _NATIVE_RELATIONSHIP_CHUNK + 2))
+        mock_run.return_value = _graphql({f"i{i}": _issue_node() for i in ids})
+        checks = iter([False, True])
+
+        result = await self.adapter.get_native_relationships(ids, should_skip=lambda: next(checks))
+
+        assert mock_run.await_count == 1
+        assert set(result.blockers) == set(ids[:_NATIVE_RELATIONSHIP_CHUNK])
+        assert result.unverified == frozenset(ids[_NATIVE_RELATIONSHIP_CHUNK:])
+
+    async def test_issues_are_read_in_chunks(self, mock_run: AsyncMock) -> None:
+        from sova.adapters.github import _NATIVE_RELATIONSHIP_CHUNK
+
+        ids = list(range(1, _NATIVE_RELATIONSHIP_CHUNK + 2))
+
+        async def answer(*args, **kwargs):
+            query = next(a for a in args if a.startswith("query="))
+            return _graphql({f"i{i}": _issue_node() for i in ids if f"i{i}: issue(" in query})
+
+        mock_run.side_effect = answer
+
+        result = await self.adapter.get_native_relationships(ids)
+
+        assert mock_run.await_count == 2
+        assert set(result.blockers) == set(ids)
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(_shell_result(stderr="HTTP 502", returncode=1), id="failed"),
+            pytest.param(_shell_result(stdout="not json"), id="bad-json"),
+            pytest.param(_graphql(None, errors=[{"message": "Field 'blockedBy' doesn't exist"}]), id="no-data"),
+            pytest.param(
+                _graphql({"i10": _issue_node()}, errors=[{"message": "something", "path": None}]),
+                id="unattributed-error",
+            ),
+            pytest.param(
+                _graphql({"i10": _issue_node(sub_issues=_connection(_relation(5), more=True))}), id="truncated"
+            ),
+            pytest.param(_graphql({"i10": {"blockedBy": _connection()}}), id="missing-relationship"),
+            pytest.param(_graphql({"i10": _issue_node(blocked_by=_connection({"state": "OPEN"}))}), id="no-number"),
+            pytest.param(
+                _graphql({"i10": _issue_node(blocked_by=_connection({"number": 5, "state": "OPEN"}))}),
+                id="no-repository",
+            ),
+        ],
+    )
+    async def test_an_unreadable_answer_leaves_the_issue_unverified(self, mock_run: AsyncMock, answer) -> None:
+        mock_run.return_value = answer
+
+        result = await self.adapter.get_native_relationships([10])
+
+        assert result.blockers == {}
+        assert result.unverified == frozenset({10})
+
+    async def test_a_partial_answer_keeps_the_good_aliases(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _graphql(
+            {"i10": _issue_node(blocked_by=_connection(_relation(5))), "i20": None},
+            errors=[{"type": "NOT_FOUND", "path": ["repository", "i20"], "message": "Could not resolve"}],
+            returncode=1,
+        )
+
+        result = await self.adapter.get_native_relationships([10, 20])
+
+        assert result.blockers == {10: frozenset({5})}
+        assert result.unverified == frozenset({20})
+
+    async def test_a_rate_limited_answer_is_tracked_and_leaves_the_chunk_unverified(self, mock_run: AsyncMock) -> None:
+        from sova.supervisor.github_quota import get_github_quota_tracker
+
+        mock_run.return_value = _shell_result(stderr="API rate limit exceeded", returncode=1)
+
+        result = await self.adapter.get_native_relationships([10, 20])
+
+        assert result.blockers == {}
+        assert result.unverified == frozenset({10, 20})
+        assert get_github_quota_tracker().should_skip()
+
+    async def test_a_cooldown_skips_the_read(self, mock_run: AsyncMock) -> None:
+        result = await self.adapter.get_native_relationships([10, 20], should_skip=lambda: True)
+
+        mock_run.assert_not_called()
+        assert result.blockers == {}
+        assert result.unverified == frozenset({10, 20})
