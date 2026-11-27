@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import subprocess
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +21,7 @@ from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES
 from sova.git.safety import SUSPICIOUS_PATHS, unstage_suspicious_files
 from sova.git.untracked_collisions import stage_all_except
 from sova.utils.env import scrub_check_env
+from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
 from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
@@ -30,6 +33,9 @@ if TYPE_CHECKING:
 log = get_logger(component="git.worktree")
 
 WORKTREE_DIR = ".claude/worktrees"
+# Line prefixes of `git worktree list --porcelain` output.
+_PORCELAIN_WORKTREE = "worktree "
+_PORCELAIN_BRANCH = "branch refs/heads/"
 
 
 def _exclude_anywhere(name: str) -> str:
@@ -304,10 +310,10 @@ async def find_worktree_by_branch(branch: str, *, cwd: Path | None = None) -> Pa
 
     current_path: str | None = None
     for line in result.stdout.splitlines():
-        if line.startswith("worktree "):
-            current_path = line[len("worktree ") :]
-        elif line.startswith("branch refs/heads/") and current_path is not None:
-            wt_branch = line[len("branch refs/heads/") :]
+        if line.startswith(_PORCELAIN_WORKTREE):
+            current_path = line[len(_PORCELAIN_WORKTREE) :]
+        elif line.startswith(_PORCELAIN_BRANCH) and current_path is not None:
+            wt_branch = line[len(_PORCELAIN_BRANCH) :]
             if wt_branch == branch:
                 return Path(current_path)
 
@@ -1169,14 +1175,38 @@ _ISSUE_BRANCH_RE = re.compile(
 _JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 
 
+@dataclass(frozen=True)
+class GCEntry:
+    """One worktree or local branch the collection removed, would remove (dry run) or skipped, and why.
+
+    ``path`` is empty for a branch-only entry; ``branch`` is empty when a worktree's branch could not be read.
+    """
+
+    path: str
+    branch: str
+    reason: str
+
+
 @dataclass
 class GCResult:
-    """Result of an issue-aware garbage collection run."""
+    """Result of an issue-aware garbage collection run.
 
-    worktrees_removed: int = 0
-    branches_removed: int = 0
+    Every target is a named entry: a skip carries its reason rather than being a silent missing count.
+    """
+
+    removed_worktrees: list[GCEntry] = field(default_factory=list)
+    removed_branches: list[GCEntry] = field(default_factory=list)
+    skipped: list[GCEntry] = field(default_factory=list)
     stashes_found: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+    @property
+    def worktrees_removed(self) -> int:
+        return len(self.removed_worktrees)
+
+    @property
+    def branches_removed(self) -> int:
+        return len(self.removed_branches)
 
 
 def extract_issue_from_branch(branch: str) -> tuple[str | None, str | None]:
@@ -1244,11 +1274,342 @@ async def _list_stashes(project_dir: Path) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+@dataclass(frozen=True)
+class _GhScope:
+    """The configured repository and the configured user's gh environment for an issue-scoped collection."""
+
+    repo: str = ""
+    env: dict[str, str] | None = None
+
+    @property
+    def repo_args(self) -> tuple[str, ...]:
+        return ("--repo", self.repo) if self.repo else ()
+
+
+@dataclass(frozen=True)
+class _MergedPRBranches:
+    """Branches with a merged same-repository pull request: ``verified`` when the local tip is that pull request's
+    head commit (merged as it stands, even by squash or rebase), ``diverged`` when the tip moved past it."""
+
+    verified: set[str] = field(default_factory=set)
+    diverged: set[str] = field(default_factory=set)
+
+
+_DIVERGED_REASON = "it has local commits after its merged pull request"
+_UNMERGED_REASON = "it is not merged where git branch -d checks (it may have been squash merged)"
+
+
+def _merged_heads(stdout: str) -> set[str] | None:
+    """The head commits of the merged same-repository pull requests in ``gh pr list --json`` output, None if
+    unparseable. A fork's pull request that reused the branch name is not this branch's, so it is left out."""
+    try:
+        prs = json.loads(stdout or "[]")
+    except ValueError:
+        return None
+    if not isinstance(prs, list):
+        return None
+    return {
+        str(pr["headRefOid"])
+        for pr in prs
+        if isinstance(pr, dict) and pr.get("headRefOid") and not pr.get("isCrossRepository")
+    }
+
+
+async def _merged_pr_branches(
+    project_dir: Path, branches: set[str], scope: _GhScope, gc_result: GCResult
+) -> _MergedPRBranches:
+    """Which ``branches`` are the head of a merged pull request (an integrate run that merged, then failed).
+
+    The merge proof is the pull request's head commit equalling the local branch tip, never the branch name alone:
+    a stale merged pull request from an earlier attempt that reused the name proves nothing about the commits on
+    the branch now. A lookup that fails is recorded as an error rather than read as "not merged".
+    """
+    found = _MergedPRBranches()
+    for branch in sorted(branches):
+        result = await run(
+            "gh", "pr", "list", *scope.repo_args, "--state", "merged", "--head", branch,
+            "--json", "headRefOid,isCrossRepository", cwd=project_dir, env=scope.env,
+        )  # fmt: skip
+        heads = _merged_heads(result.stdout) if result.success else None
+        if heads is None:
+            log.warning("gc.merged_pr_lookup_failed", branch=branch, stderr=result.stderr[:200])
+            gc_result.errors.append(f"Could not check for a merged pull request of {branch}")
+            continue
+        if not heads:
+            continue
+        tip = await run("git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}", cwd=project_dir)
+        if tip.success and tip.stdout.strip() in heads:
+            found.verified.add(branch)
+        else:
+            log.info("gc.branch_diverged_from_merged_pr", branch=branch)
+            found.diverged.add(branch)
+    return found
+
+
+def _is_issue_number(text: str) -> bool:
+    """A plain ASCII decimal number: ``str.isdigit()`` also accepts "²", which gh cannot look up."""
+    return text.isascii() and text.isdecimal()
+
+
+async def _closed_issue_ids(project_dir: Path, issue: str | None, gc_result: GCResult, scope: _GhScope) -> set[str]:
+    """Closed GitHub issue numbers: the batch list, or just ``issue`` when scoped to one and it is closed.
+
+    A scoped read that fails is recorded as an error, so an unreadable state never reads as "nothing to clean".
+    A JIRA key is never in the set (no gh API for JIRA): its targets go by the gone-upstream rule instead.
+    The scoped read uses the configured repository and user (``scope``), never only what the checkout resolves.
+    """
+    if issue is None:
+        return await _fetch_closed_issues(project_dir)
+    if _JIRA_KEY_RE.match(issue):
+        return set()
+    if not _is_issue_number(issue):
+        gc_result.errors.append(f"Not an issue number or JIRA key: {issue!r}")
+        return set()
+    result = await run(
+        "gh", "issue", "view", issue, *scope.repo_args, "--json", "state", "--jq", ".state",
+        cwd=project_dir, env=scope.env,
+    )  # fmt: skip
+    if not result.success:
+        log.warning("gc.fetch_issue_state_failed", issue=issue, stderr=result.stderr[:200])
+        gc_result.errors.append(f"Could not read the state of issue #{issue}: {result.stderr.strip()[:200]}")
+        return set()
+    return {issue} if result.stdout.strip().upper() == "CLOSED" else set()
+
+
+def _parse_worktree_branches(porcelain: str) -> dict[Path, str]:
+    """Map each worktree path in ``git worktree list --porcelain`` output to its checked-out branch."""
+    branches: dict[Path, str] = {}
+    path: Path | None = None
+    for line in porcelain.splitlines():
+        if line.startswith(_PORCELAIN_WORKTREE):
+            path = Path(line[len(_PORCELAIN_WORKTREE) :]).resolve()
+        elif line.startswith(_PORCELAIN_BRANCH) and path is not None:
+            branches[path] = line[len(_PORCELAIN_BRANCH) :]
+    return branches
+
+
+async def _worktree_skip_reason(entry: Path, project_dir: Path) -> str | None:
+    """Why a worktree must be left alone (an active agent, uncommitted changes, unreadable status), else None."""
+    active_pid = await check_worktree_active_agent(entry, project_dir=project_dir)
+    if active_pid is not None:
+        log.info("gc.worktree_skipped_active", path=str(entry), pid=active_pid)
+        return f"an agent (PID {active_pid}) is running in it"
+    dirty = await run("git", "status", "--porcelain", cwd=entry)
+    if not dirty.success:
+        log.info("gc.worktree_skipped_status_unknown", path=str(entry), stderr=dirty.stderr[:200])
+        return "its git status could not be read"
+    if dirty.stdout.strip():
+        log.info("gc.worktree_skipped_dirty", path=str(entry))
+        return "it has uncommitted changes"
+    return None
+
+
+async def _worktree_eligibility(entry: Path, branch: str, targets: _GCTargets, project_dir: Path) -> tuple[str, str]:
+    """(reason it may be removed or "" when it may not, its branch) for one worktree directory."""
+    issue_id = entry.name
+    if issue_id in targets.closed_issues:
+        return f"issue #{issue_id} is closed", branch
+    if branch and branch in targets.merged_branches:
+        return f"the pull request of {branch} is merged", branch
+    if not _JIRA_KEY_RE.match(issue_id):
+        return "", branch
+    branch_result = await run("git", "branch", "--show-current", cwd=entry)
+    branch = branch_result.stdout.strip() if branch_result.success else ""
+    if branch and await _has_gone_upstream(branch, project_dir):
+        return f"the upstream of {branch} is gone", branch
+    return "", branch
+
+
+def _scoped_worktrees(project_dir: Path, issue: str | None) -> list[Path]:
+    """The worktree directories a collection considers: all of them, or only ``issue``'s."""
+    worktrees_dir = project_dir / WORKTREE_DIR
+    if not worktrees_dir.exists():
+        return []
+    return [e for e in sorted(worktrees_dir.iterdir()) if e.is_dir() and (issue is None or e.name == issue)]
+
+
+async def _collect_worktrees(
+    project_dir: Path,
+    targets: _GCTargets,
+    wt_branches: dict[Path, str],
+    *,
+    issue: str | None,
+    dry_run: bool,
+    gc_result: GCResult,
+) -> set[str]:
+    """Remove (or, in a dry run, list) eligible worktrees; returns the branches no longer checked out."""
+    freed: set[str] = set()
+    for entry in _scoped_worktrees(project_dir, issue):
+        branch = await _collect_worktree(
+            entry,
+            wt_branches.get(entry.resolve(), ""),
+            targets,
+            project_dir,
+            dry_run=dry_run,
+            gc_result=gc_result,
+        )
+        if branch:
+            freed.add(branch)
+    return freed
+
+
+async def _collect_worktree(
+    entry: Path, branch: str, targets: _GCTargets, project_dir: Path, *, dry_run: bool, gc_result: GCResult
+) -> str | None:
+    """Remove (or, in a dry run, list) one worktree when eligible and safe; its freed branch, else None."""
+    reason, branch = await _worktree_eligibility(entry, branch, targets, project_dir)
+    if not reason:
+        if branch and branch in targets.diverged_branches:
+            gc_result.skipped.append(
+                GCEntry(path=str(entry), branch=branch, reason=f"its branch {_DIVERGED_REASON.removeprefix('it ')}")
+            )
+        return None
+    skip_reason = await _worktree_skip_reason(entry, project_dir)
+    if skip_reason is not None:
+        gc_result.skipped.append(GCEntry(path=str(entry), branch=branch, reason=skip_reason))
+        return None
+    if targets.only is not None and str(entry) not in targets.only:
+        # Eligible now but not on the confirmed list (it became eligible after the preview): left alone.
+        return None
+    log.info("gc.worktree_closed_issue", path=str(entry), issue=entry.name)
+    if not dry_run:
+        try:
+            await cleanup_worktree(entry, cwd=project_dir)
+        except (RuntimeError, OSError) as exc:
+            log.warning("gc.worktree_remove_failed", path=str(entry), exc_info=True)
+            gc_result.errors.append(f"Failed to remove worktree {entry}: {exc}")
+            return None
+    gc_result.removed_worktrees.append(GCEntry(path=str(entry), branch=branch, reason=reason))
+    return branch or None
+
+
+def _branch_in_scope(branch: str, issue: str | None) -> bool:
+    gh_num, jira_key = extract_issue_from_branch(branch)
+    return issue is None or issue in (gh_num, jira_key)
+
+
+async def _branch_removal_reason(branch: str, targets: _GCTargets, issue: str | None, project_dir: Path) -> str:
+    """Why a local branch may be deleted, or "" when it may not (or is outside the issue scope)."""
+    gh_num, jira_key = extract_issue_from_branch(branch)
+    if not _branch_in_scope(branch, issue):
+        return ""
+    if gh_num and gh_num in targets.closed_issues:
+        return f"issue #{gh_num} is closed"
+    if branch in targets.merged_branches:
+        return f"the pull request of {branch} is merged"
+    if jira_key and await _has_gone_upstream(branch, project_dir):
+        return f"the upstream of {branch} is gone"
+    return ""
+
+
+async def _collect_branches(
+    project_dir: Path,
+    targets: _GCTargets,
+    checked_out: set[str],
+    *,
+    issue: str | None,
+    dry_run: bool,
+    gc_result: GCResult,
+) -> None:
+    """Delete (or, in a dry run, list) eligible local branches that no kept worktree has checked out."""
+    for branch in await _list_local_branches(project_dir):
+        if issue is None and branch in checked_out:
+            continue
+        reason = await _branch_removal_reason(branch, targets, issue, project_dir)
+        if not reason:
+            continue
+        skip_reason = await _branch_skip_reason(branch, checked_out, targets, project_dir=project_dir)
+        if skip_reason:
+            gc_result.skipped.append(GCEntry(path="", branch=branch, reason=skip_reason))
+            continue
+        if targets.only is not None and branch not in targets.only:
+            continue  # eligible now but not on the confirmed list
+        log.info("gc.branch_cleanup", branch=branch, reason=reason)
+        error = "" if dry_run else await _delete_branch(branch, targets, project_dir)
+        if error:
+            gc_result.errors.append(error)
+            continue
+        gc_result.removed_branches.append(GCEntry(path="", branch=branch, reason=reason))
+
+
+async def _delete_branch(branch: str, targets: _GCTargets, project_dir: Path) -> str:
+    """Delete one local branch, returning the error to report or ``""`` when it was deleted."""
+    # A verified merged pull request is the merge proof (a squash merge leaves no ancestry for -d to find).
+    delete_flag = "-D" if branch in targets.merged_branches else "-d"
+    del_result = await run("git", "branch", delete_flag, branch, cwd=project_dir)
+    if del_result.success:
+        return ""
+    return f"Failed to delete branch {branch}: {del_result.stderr.strip()}"
+
+
+async def _branch_skip_reason(branch: str, checked_out: set[str], targets: _GCTargets, *, project_dir: Path) -> str:
+    """Why an otherwise eligible branch must be kept, or ``""`` when it may be deleted.
+
+    The same rules apply in a dry run and a real one, so a preview's skip is a skip on confirm too, not an error.
+    A branch whose tip is a merged pull request's head needs no ancestry check (it is deleted with -D); any other
+    must be merged where ``git branch -d`` looks. A gone upstream alone is never a merge proof.
+    """
+    if branch in checked_out:
+        return "a kept worktree has it checked out"
+    if branch in targets.merged_branches:
+        return ""
+    if not await _branch_merged(branch, project_dir):
+        # `git branch -d` refuses an unmerged branch, so neither the preview nor the run may count it as removed.
+        return _DIVERGED_REASON if branch in targets.diverged_branches else _UNMERGED_REASON
+    return ""
+
+
+async def _branch_merged(branch: str, project_dir: Path) -> bool:
+    """Whether ``git branch -d`` would accept *branch*: merged into its upstream, or into HEAD when it has none.
+
+    An upstream ref that no longer resolves (a gone remote branch) falls back to HEAD, as git does.
+    """
+    upstream = await run("git", "merge-base", "--is-ancestor", branch, f"{branch}@{{upstream}}", cwd=project_dir)
+    if upstream.returncode in (0, 1):
+        return upstream.returncode == 0
+    head = await run("git", "merge-base", "--is-ancestor", branch, "HEAD", cwd=project_dir)
+    return head.returncode == 0
+
+
+# "stash@{0}: WIP on <branch>: <sha> <subject>" or "stash@{0}: On <branch>: <message>"; a ref cannot contain ":".
+_STASH_BRANCH_RE = re.compile(r"^stash@\{\d+\}:\s*(?:WIP on|On) (?P<branch>[^:]+):")
+
+
+def _stashes_for(stashes: list[str], branches: set[str]) -> list[str]:
+    """The stash lines whose header names one of ``branches``, matched on the branch field, never the message."""
+    matches = (_STASH_BRANCH_RE.match(line) for line in stashes)
+    return [line for line, m in zip(stashes, matches, strict=True) if m and m.group("branch") in branches]
+
+
+@dataclass(frozen=True)
+class _GCTargets:
+    """What one collection may remove: closed issues, merged-PR branches (scoped only; ``diverged_branches`` have a
+    merged pull request but local commits after it) and an optional allow-list."""
+
+    closed_issues: set[str]
+    merged_branches: set[str] = field(default_factory=set)
+    only: frozenset[str] | None = None
+    diverged_branches: set[str] = field(default_factory=set)
+
+
+async def _scoped_merged_branches(
+    project_dir: Path, issue: str, wt_branches: dict[Path, str], scope: _GhScope, gc_result: GCResult
+) -> _MergedPRBranches:
+    """The branches of ``issue`` (its worktree's and its local ones) with a merged pull request."""
+    candidates = {wt_branches.get(e.resolve(), "") for e in _scoped_worktrees(project_dir, issue)}
+    candidates |= {b for b in await _list_local_branches(project_dir) if _branch_in_scope(b, issue)}
+    return await _merged_pr_branches(project_dir, candidates - {""}, scope, gc_result)
+
+
 async def cleanup_by_issue_state(
     *,
     project_dir: Path,
     dry_run: bool = False,
     include_branches: bool = True,
+    issue: str | None = None,
+    repo: str = "",
+    github_user: str = "",
+    only: Collection[str] | None = None,
 ) -> GCResult:
     """Remove worktrees (and, unless disabled, branches) for closed issues.
 
@@ -1264,72 +1625,51 @@ async def cleanup_by_issue_state(
     gone (``_has_gone_upstream``). Stashes are reported but never dropped.
 
     Set ``include_branches=False`` to remove only worktrees, skipping the
-    (more aggressive) local branch deletion pass.
+    (more aggressive) local branch deletion pass. Set ``issue`` to consider only
+    that issue's worktree and branches (its state is read on its own, and only the
+    stashes naming its branches are reported). A branch whose worktree is removed
+    in the same call is no longer checked out, so the branch pass may delete it.
+    Each removed, would-be-removed (dry run) and skipped target is a named entry.
+
+    A scoped GitHub issue reads its state from the configured ``repo`` as
+    ``github_user`` (their gh token), and a branch of it whose local tip is the
+    head commit of a merged same-repository pull request is eligible even while
+    the issue is open (an integrate run that merged and then failed), and is
+    deleted with ``git branch -D``: a squash or rebase merge with the remote
+    branch deleted leaves no ancestry for ``-d`` to find. A branch with commits
+    after its merged pull request is skipped with that reason. ``only`` limits
+    removal to those worktree paths and branch names, so a confirmed preview
+    removes exactly what it listed.
     """
     gc_result = GCResult()
-    closed_issues = await _fetch_closed_issues(project_dir)
+    scope = _GhScope(repo, await resolve_gh_env(github_user)) if issue is not None else _GhScope()
+    closed_issues = await _closed_issue_ids(project_dir, issue, gc_result, scope)
 
-    active_wt_branches: set[str] = set()
     wt_result = await run("git", "worktree", "list", "--porcelain", cwd=project_dir)
-    if wt_result.success:
-        for line in wt_result.stdout.splitlines():
-            if line.startswith("branch refs/heads/"):
-                active_wt_branches.add(line[len("branch refs/heads/") :])
+    wt_branches = _parse_worktree_branches(wt_result.stdout) if wt_result.success else {}
 
-    worktrees_dir = project_dir / WORKTREE_DIR
-    if worktrees_dir.exists():
-        for entry in worktrees_dir.iterdir():
-            if not entry.is_dir():
-                continue
-            issue_id = entry.name
-            eligible = issue_id in closed_issues
-            if not eligible and _JIRA_KEY_RE.match(issue_id):
-                branch_result = await run("git", "branch", "--show-current", cwd=entry)
-                branch = branch_result.stdout.strip() if branch_result.success else ""
-                eligible = bool(branch) and await _has_gone_upstream(branch, project_dir)
-            if eligible:
-                active_pid = await check_worktree_active_agent(entry, project_dir=project_dir)
-                if active_pid is not None:
-                    log.info("gc.worktree_skipped_active", path=str(entry), pid=active_pid)
-                    continue
-                dirty = await run("git", "status", "--porcelain", cwd=entry)
-                if not dirty.success:
-                    log.info("gc.worktree_skipped_status_unknown", path=str(entry), stderr=dirty.stderr[:200])
-                    continue
-                if dirty.stdout.strip():
-                    log.info("gc.worktree_skipped_dirty", path=str(entry))
-                    continue
-                log.info("gc.worktree_closed_issue", path=str(entry), issue=issue_id)
-                if not dry_run:
-                    try:
-                        await cleanup_worktree(entry, cwd=project_dir)
-                    except (RuntimeError, OSError) as exc:
-                        log.warning("gc.worktree_remove_failed", path=str(entry), exc_info=True)
-                        gc_result.errors.append(f"Failed to remove worktree {entry}: {exc}")
-                        continue
-                gc_result.worktrees_removed += 1
+    merged = _MergedPRBranches()
+    # Closed or open: a pull request merged by squash or rebase leaves no ancestry, so its head is the merge proof.
+    if issue is not None and _is_issue_number(issue) and not gc_result.errors:
+        merged = await _scoped_merged_branches(project_dir, issue, wt_branches, scope, gc_result)
+    targets = _GCTargets(closed_issues, merged.verified, frozenset(only) if only is not None else None, merged.diverged)
 
-    if include_branches:
-        branches = await _list_local_branches(project_dir)
-        for branch in branches:
-            if branch in active_wt_branches:
-                continue
-            gh_num, jira_key = extract_issue_from_branch(branch)
-            should_remove = False
-            if gh_num and gh_num in closed_issues:
-                should_remove = True
-            elif jira_key and await _has_gone_upstream(branch, project_dir):
-                should_remove = True
-            if should_remove:
-                log.info("gc.branch_cleanup", branch=branch, gh_issue=gh_num, jira_key=jira_key)
-                if not dry_run:
-                    del_result = await run("git", "branch", "-d", branch, cwd=project_dir)
-                    if not del_result.success:
-                        gc_result.errors.append(f"Failed to delete branch {branch}: {del_result.stderr.strip()}")
-                        continue
-                gc_result.branches_removed += 1
+    freed = await _collect_worktrees(
+        project_dir, targets, wt_branches, issue=issue, dry_run=dry_run, gc_result=gc_result
+    )
+    if include_branches and not wt_result.success:
+        # Without the checkout inventory a branch checked out elsewhere would look deletable.
+        gc_result.errors.append(
+            f"Could not list worktrees, so no branch was considered: {wt_result.stderr.strip()[:200]}"
+        )
+    elif include_branches:
+        checked_out = set(wt_branches.values()) - freed
+        await _collect_branches(project_dir, targets, checked_out, issue=issue, dry_run=dry_run, gc_result=gc_result)
 
     stashes = await _list_stashes(project_dir)
+    if issue is not None:
+        entries = (*gc_result.removed_worktrees, *gc_result.removed_branches, *gc_result.skipped)
+        stashes = _stashes_for(stashes, {entry.branch for entry in entries} - {""})
     gc_result.stashes_found = stashes
 
     return gc_result
