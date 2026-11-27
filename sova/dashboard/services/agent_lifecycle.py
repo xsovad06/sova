@@ -203,6 +203,9 @@ from sova.dashboard.services.agent_validation import (
     check_stale_command as check_stale_command,
 )
 from sova.dashboard.services.agent_validation import (
+    check_write_ownership as check_write_ownership,
+)
+from sova.dashboard.services.agent_validation import (
     dispatched_role as dispatched_role,
 )
 from sova.dashboard.services.agent_validation import (
@@ -736,7 +739,17 @@ async def start_agent(
             return state_error
     # Only a run that dispatches to the developer moves the issue to in progress, so only it records the state to
     # restore: a role-less start routed to triage, research or review must not label the issue in progress.
-    developer_launch = launch_task is not None and dispatched_role(role, launch_task, None) == "developer"
+    effective_role = dispatched_role(role, launch_task, None) if role or launch_task is not None else None
+    developer_launch = launch_task is not None and effective_role == "developer"
+
+    # Before any spawn or tracker write, and not skipped by force: only respect_ownership turns the owner check off.
+    # Keyed on the dispatched role, so a role-less start or resume routed to the reviewer checks the PR author.
+    # Runs with no issue or PR too: the gh login check applies to every start that can write through gh.
+    ownership_error = await check_write_ownership(
+        issue, pa.project_dir, pr_number=pr_number, check_pr=effective_role == "reviewer", task=launch_task
+    )
+    if ownership_error:
+        return ownership_error
 
     if not force:
         mem_block, mem_warn = check_memory_pressure(pa.project_dir)
@@ -1114,6 +1127,11 @@ async def start_command(
             return await start_agent(
                 issue, role="developer", pr_number=pr_number, slug=slug, _skip_handoff_clear=_skip_handoff_clear
             )
+
+    # Also with no issue or PR: a project-level command still writes through gh as the acting login.
+    ownership_error = await check_write_ownership(issue, pa.project_dir, pr_number=pr_number)
+    if ownership_error:
+        return ownership_error
 
     mem_block, mem_warn = check_memory_pressure(pa.project_dir)
     if mem_block:

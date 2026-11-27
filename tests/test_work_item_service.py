@@ -1085,7 +1085,7 @@ class TestResolveNextAction:
     def test_reason_chain_truncates_at_match(self) -> None:
         """reason_chain lists every rule evaluated up to and including the match, no further."""
         resolution = resolve_next_action(_facts(mergeable="CONFLICTING"))
-        assert resolution.reason_chain == ("agent_running", "merged", "conflicting")
+        assert resolution.reason_chain == ("agent_running", "merged", "owned_by_other", "conflicting")
         assert resolution.reason_chain[-1] == "conflicting"
 
     def test_reason_chain_covers_full_ladder_on_default_match(self) -> None:
@@ -1093,7 +1093,7 @@ class TestResolveNextAction:
         resolution = resolve_next_action(_facts())
         assert resolution.state == WorkItemState.PR_READY_TO_MERGE
         assert resolution.reason_chain[-1] == "ready_to_merge"
-        assert len(resolution.reason_chain) == 16
+        assert len(resolution.reason_chain) == 17
 
     def test_resolution_is_frozen(self) -> None:
         resolution = resolve_next_action(_facts())
@@ -1836,6 +1836,35 @@ class TestGetWorkItems:
 
         assert [(item["issue_number"], item["pr_number"]) for item in result["items"]] == [("42", 301)]
         assert result["items"][0]["title"] == "ARVAC issue"
+
+    async def test_jira_project_never_compares_the_assignee_with_the_github_login(
+        self, _mock_sources: tuple[AsyncMock, MagicMock, AsyncMock]
+    ) -> None:
+        """A Jira assignee is a display name: with ownership on, the item stays writable and the board owner empty."""
+        mock_fetch, *_ = _mock_sources
+        queue = [
+            {
+                "issue": "42",
+                "title": "Bug",
+                "state": "triaged",
+                "labels": [],
+                "priority": 2,
+                "assignees": ["Sam Rivera"],
+                "jira_key": "ARVAC-42",
+            }
+        ]
+        mock_fetch.return_value = (queue, [], [], {"agents": [], "completed": []})
+        cfg = ProjectConfig(
+            github_user="alex",
+            task_source=TaskSourceConfig(
+                type="jira", jira_project_key="ARVAC", jira_base_url="https://jira.example.test"
+            ),
+        )
+        with patch("sova.dashboard.services.work_item_service.load_config", return_value=cfg):
+            result = await get_work_items()
+
+        assert result["owner_check_user"] == ""
+        assert result["items"][0]["owner"] == ""
 
     @pytest.mark.parametrize(
         ("found", "expected"),

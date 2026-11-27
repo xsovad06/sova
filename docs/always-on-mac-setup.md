@@ -355,6 +355,15 @@ lsof -a -p 12345 -d cwd -Fn
 
 The line that starts with `n` is the directory.
 
+### Two Machines on One Repository
+
+Two machines (a work Mac and a personal one, or two teammates) can run SOVA on the same repository without a coordination protocol: ownership comes from the tracker. Give each machine its own `github_user` (`sova config set github_user <login>`) and log `gh` in as that login (`gh auth login`, or `gh auth switch --user <login>`).
+
+- A PR belongs to its author, and an issue without a PR to its assignees. Each machine refuses to start, resume, review, address, integrate or auto-chain a run on the other login's PR or issue, with a message naming the owner, and its Work board shows that item read-only ("Owned by <login>", no buttons). Assign an issue to yourself before starting it, so the other machine leaves it alone.
+- When the login `gh` acts as differs from `github_user`, every write is refused with a message naming both logins; `sova doctor` shows the same mismatch under "gh login matches github_user".
+- The sidebar account row and the phone More sheet ("Acts on GitHub as") show which account a dashboard writes as, so the phone can tell the two machines' pages apart.
+- To take over a teammate's PR, set `supervisor.respect_ownership` to `false` on your machine; it turns the ownership check off for the supervisor and the dashboard alike. There is no per-run override.
+
 ## Tokens
 
 Enter any token with a script that reads it with echo off and stores it in the login keychain, never through chat, a config file or a plist. For a `claude setup-token` token, use the script in [Claude Code: Headless and Second-Machine Login](ai-provider-setup-guide.md#claude-code-headless-and-second-machine-login).

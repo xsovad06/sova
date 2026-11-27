@@ -236,6 +236,8 @@ function _render() {
   var context = _kv([
     ['Milestone', prOnly ? '' : (entry.milestone ? _tag(entry.milestone) : '<span class="text-gray-500">None</span>')],
     ['Agent fit', entry.mode ? _tag(entry.mode.replace(/_/g, ' ')) : ''],
+    // Another login owns it (#1594): its card and this drawer offer no write action.
+    ['Owned by', entry.owner ? '<span class="break-words">' + escapeHtml(entry.owner) + ' (read-only)</span>' : ''],
     ['Last run', last ? '<span class="flex flex-wrap items-center gap-1">' + lastRunHtml(entry, true) +
       '<a class="text-accent hover:underline" href="' + (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work/' + last.run_id + '">details</a></span>' : ''],
   ]);

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from sova.adapters.base import Task, TaskState
 from sova.config.db_loader import load_hidden_issues, load_task_queue, remove_from_task_queue
 from sova.config.loader import load_config
+from sova.core.ownership import issue_owned_by_other
 from sova.dashboard.services.snapshot_service import (
     Snapshot,
     get_snapshot,
@@ -308,6 +309,7 @@ def _issue_entry(
         "state_color": state_color(state) if state else "",
         "priority": priority,
         "start": start_action(state, number),
+        "owner": "",  # the login(s) owning a read-only entry (#1594); always present for board.js and drawer.js
     }
 
 
@@ -328,8 +330,16 @@ def _item_entry(item: dict, stage: WorkStage) -> dict:
         state=item.get("state", ""),
         priority=item.get("issue_priority", ""),
     )
-    entry.update(_item_extras(item))
+    _add_item_extras(entry, item)
     return entry
+
+
+def _add_item_extras(entry: dict, item: dict) -> None:
+    """Add *item*'s extras to *entry*; an item another login owns keeps no Start and its "Owned by" label (#1594)."""
+    entry.update(_item_extras(item))
+    if entry["owner"]:
+        entry["start"] = None
+        entry["state_label"] = item.get("state_label") or entry.get("state_label", "")
 
 
 def _item_extras(item: dict) -> dict:
@@ -342,6 +352,7 @@ def _item_extras(item: dict) -> dict:
         "actions": _item_actions(item),
         "assignees": item.get("assignees") or [],
         "jira_key": item.get("jira_key") or "",
+        "owner": item.get("owner") or "",
     }
 
 
@@ -1369,13 +1380,17 @@ async def build_board(
         github_user=items_data.get("github_user") or "",
         jira_display_name=items_data.get("jira_display_name") or "",
     )
+    owner_check_user = items_data.get("owner_check_user") or ""
     for entry in up_next:  # the ranking knows no runs or PRs: take them from the issue's work item
         item = board.by_number.get(entry["number"])
         if item is not None:
-            entry.update(_item_extras(item))
+            _add_item_extras(entry, item)
         task = graph.get_task(entry["number"])
         if task is not None:
             entry.update(assignees=list(task.assignees), jira_key=task.metadata.get("key", ""))
+            if item is None and issue_owned_by_other(task.assignees, owner_check_user):
+                # An issue with no work item is read-only too when only other logins are assigned (#1594).
+                entry.update(owner=", ".join(task.assignees), start=None)
     hidden_entries = [
         _item_entry(board.by_number[n], stage_of[n])
         if n in board.by_number
